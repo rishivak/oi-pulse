@@ -85,7 +85,7 @@ Preferred one-command startup for local development:
 On macOS/Linux, use the bash equivalents:
 
 ```bash
-chmod +x ./infra/scripts/podman-up.sh ./scripts/start-local.sh ./scripts/status-local.sh
+chmod +x ./infra/scripts/podman-up.sh ./infra/scripts/podman-down.sh ./infra/scripts/podman-reset-data.sh ./infra/scripts/podman-machine-up.sh ./scripts/start-local.sh ./scripts/status-local.sh
 ./scripts/start-local.sh
 ```
 
@@ -186,6 +186,12 @@ Stop the local stack:
 .\infra\scripts\podman-down.ps1
 ```
 
+macOS/Linux:
+
+```bash
+./infra/scripts/podman-down.sh
+```
+
 Check local app status:
 
 ```powershell
@@ -202,6 +208,12 @@ Reset local Podman data volumes and network:
 
 ```powershell
 .\infra\scripts\podman-reset-data.ps1
+```
+
+macOS/Linux:
+
+```bash
+./infra/scripts/podman-reset-data.sh
 ```
 
 Check running containers:
@@ -221,6 +233,12 @@ If Podman is installed but not running:
 
 ```powershell
 .\infra\scripts\podman-machine-up.ps1
+```
+
+macOS/Linux:
+
+```bash
+./infra/scripts/podman-machine-up.sh
 ```
 
 ## 11 — After-Hours Live Data Behavior
