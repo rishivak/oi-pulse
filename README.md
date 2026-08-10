@@ -85,7 +85,7 @@ Preferred one-command startup for local development:
 On macOS/Linux, use the bash equivalents:
 
 ```bash
-chmod +x ./infra/scripts/podman-up.sh ./infra/scripts/podman-down.sh ./infra/scripts/podman-reset-data.sh ./infra/scripts/podman-machine-up.sh ./scripts/start-local.sh ./scripts/status-local.sh
+find . -type f -name "*.sh" -exec chmod +x {} +
 ./scripts/start-local.sh
 ```
 
@@ -183,7 +183,7 @@ The worker will start collecting snapshots every 5 minutes during market hours (
 If any macOS/Linux script fails with "Permission denied", run this once from repo root:
 
 ```bash
-chmod +x ./infra/scripts/podman-up.sh ./infra/scripts/podman-down.sh ./infra/scripts/podman-reset-data.sh ./infra/scripts/podman-machine-up.sh ./scripts/start-local.sh ./scripts/status-local.sh
+find . -type f -name "*.sh" -exec chmod +x {} +
 ```
 
 Stop the local stack:
