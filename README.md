@@ -70,10 +70,30 @@ Start only Postgres and Redis:
 .\infra\scripts\podman-up.ps1 -InfraOnly
 ```
 
+macOS/Linux:
+
+```bash
+./infra/scripts/podman-up.sh --infra-only
+
+# If you get "Permission denied":
+chmod +x ./infra/scripts/podman-up.sh
+./infra/scripts/podman-up.sh --infra-only
+```
+
 Start the full local stack under Podman:
 
 ```powershell
 .\infra\scripts\podman-up.ps1 -Full
+```
+
+macOS/Linux:
+
+```bash
+./infra/scripts/podman-up.sh --full
+
+# If you get "Permission denied":
+chmod +x ./infra/scripts/podman-up.sh
+./infra/scripts/podman-up.sh --full
 ```
 
 Preferred one-command startup for local development:
@@ -85,7 +105,10 @@ Preferred one-command startup for local development:
 On macOS/Linux, use the bash equivalents:
 
 ```bash
-find . -type f -name "*.sh" -exec chmod +x {} +
+./scripts/start-local.sh
+
+# If you get "Permission denied":
+chmod +x ./scripts/start-local.sh
 ./scripts/start-local.sh
 ```
 
@@ -180,12 +203,6 @@ The worker will start collecting snapshots every 5 minutes during market hours (
 
 ## 10 — Podman Operations
 
-If any macOS/Linux script fails with "Permission denied", run this once from repo root:
-
-```bash
-find . -type f -name "*.sh" -exec chmod +x {} +
-```
-
 Stop the local stack:
 
 ```powershell
@@ -195,6 +212,10 @@ Stop the local stack:
 macOS/Linux:
 
 ```bash
+./infra/scripts/podman-down.sh
+
+# If you get "Permission denied":
+chmod +x ./infra/scripts/podman-down.sh
 ./infra/scripts/podman-down.sh
 ```
 
@@ -208,6 +229,10 @@ macOS/Linux:
 
 ```bash
 ./scripts/status-local.sh
+
+# If you get "Permission denied":
+chmod +x ./scripts/status-local.sh
+./scripts/status-local.sh
 ```
 
 Reset local Podman data volumes and network:
@@ -219,6 +244,10 @@ Reset local Podman data volumes and network:
 macOS/Linux:
 
 ```bash
+./infra/scripts/podman-reset-data.sh
+
+# If you get "Permission denied":
+chmod +x ./infra/scripts/podman-reset-data.sh
 ./infra/scripts/podman-reset-data.sh
 ```
 
@@ -244,6 +273,10 @@ If Podman is installed but not running:
 macOS/Linux:
 
 ```bash
+./infra/scripts/podman-machine-up.sh
+
+# If you get "Permission denied":
+chmod +x ./infra/scripts/podman-machine-up.sh
 ./infra/scripts/podman-machine-up.sh
 ```
 
