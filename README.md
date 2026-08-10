@@ -53,6 +53,13 @@ SESSION_SECRET_KEY=<generated>
 podman machine start
 ```
 
+On macOS, ensure the Podman machine is initialized and running before startup scripts:
+
+```bash
+podman machine init   # first run only
+podman machine start
+```
+
 ---
 
 ## 4 — Start Local Infrastructure With Podman
@@ -73,6 +80,13 @@ Preferred one-command startup for local development:
 
 ```powershell
 .\scripts\start-local.ps1
+```
+
+On macOS/Linux, use the bash equivalents:
+
+```bash
+chmod +x ./infra/scripts/podman-up.sh ./scripts/start-local.sh ./scripts/status-local.sh
+./scripts/start-local.sh
 ```
 
 This starts the full local stack in Podman, including the frontend, backend, worker, Postgres, Redis, and nginx.
@@ -178,6 +192,12 @@ Check local app status:
 .\scripts\status-local.ps1
 ```
 
+macOS/Linux:
+
+```bash
+./scripts/status-local.sh
+```
+
 Reset local Podman data volumes and network:
 
 ```powershell
@@ -202,6 +222,14 @@ If Podman is installed but not running:
 ```powershell
 .\infra\scripts\podman-machine-up.ps1
 ```
+
+## 11 — After-Hours Live Data Behavior
+
+The dashboard remains usable after market hours even when the live SSE stream stops producing updates.
+
+1. Existing pages continue to render the latest snapshot data already stored in Postgres.
+2. The header status switches away from live mode instead of forcing a page reload.
+3. The frontend pauses repeated reconnect attempts after several failures outside market hours and resumes reconnecting at the next market-open window.
 
 ---
 

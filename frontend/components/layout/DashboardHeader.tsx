@@ -18,7 +18,13 @@ interface DashboardHeaderProps {
 function ConnectionIndicator() {
   const status = useSSEStatus();
   const label =
-    status === "connected" ? "Live" : status === "connecting" ? "Connecting" : "Disconnected";
+    status === "connected"
+      ? "Live"
+      : status === "connecting"
+        ? "Connecting"
+        : status === "paused"
+          ? "No Live Feed"
+          : "Disconnected";
 
   return (
     <span
@@ -26,6 +32,7 @@ function ConnectionIndicator() {
         "flex items-center gap-1.5 rounded px-2 py-0.5 text-xs font-medium",
         status === "connected" && "bg-bull-dim text-bull",
         status === "connecting" && "bg-terminal-border text-terminal-muted",
+        status === "paused" && "bg-terminal-border text-terminal-text",
         status === "error" || status === "disconnected"
           ? "bg-bear-dim text-bear"
           : "",
@@ -37,6 +44,7 @@ function ConnectionIndicator() {
         <Wifi className="h-3 w-3 status-connected" aria-hidden />
       )}
       {status === "connecting" && <Loader2 className="h-3 w-3 animate-spin" aria-hidden />}
+      {status === "paused" && <WifiOff className="h-3 w-3" aria-hidden />}
       {(status === "error" || status === "disconnected") && (
         <WifiOff className="h-3 w-3" aria-hidden />
       )}

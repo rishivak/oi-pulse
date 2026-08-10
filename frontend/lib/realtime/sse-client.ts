@@ -5,7 +5,14 @@ import type { SSEEventType, SSEMessage } from "@/lib/types";
 
 type Listener<T = unknown> = (msg: SSEMessage<T>) => void;
 
-export type ConnectionStatus = "connecting" | "connected" | "disconnected" | "error";
+export type ConnectionStatus = "connecting" | "connected" | "disconnected" | "error" | "paused";
+
+const IST_TIMEZONE = "Asia/Kolkata";
+const MARKET_OPEN_HOUR = 9;
+const MARKET_OPEN_MINUTE = 15;
+const MARKET_CLOSE_HOUR = 15;
+const MARKET_CLOSE_MINUTE = 30;
+const MAX_AFTER_HOURS_RETRIES = 3;
 
 class SSEClient {
   private es: EventSource | null = null;
@@ -14,16 +21,22 @@ class SSEClient {
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private reconnectDelay = 3000;
   private maxReconnectDelay = 30_000;
+  private consecutiveFailures = 0;
   private statusCallbacks = new Set<(s: ConnectionStatus) => void>();
 
   connect() {
-    if (this.es?.readyState === EventSource.OPEN) return;
+    if (this.status === "paused") {
+      this._scheduleResumeAtMarketOpen();
+      return;
+    }
+    if (this.es && this.es.readyState !== EventSource.CLOSED) return;
     this._setStatus("connecting");
 
     this.es = new EventSource("/api/stream/events", { withCredentials: true });
 
     this.es.addEventListener("connected", () => {
       this._setStatus("connected");
+      this.consecutiveFailures = 0;
       this.reconnectDelay = 3000;
     });
 
@@ -50,6 +63,15 @@ class SSEClient {
     this.es.onmessage = handleMsg;
 
     this.es.onerror = () => {
+      this.es?.close();
+      this.es = null;
+      this.consecutiveFailures += 1;
+
+      if (!this._isMarketOpen() && this.consecutiveFailures >= MAX_AFTER_HOURS_RETRIES) {
+        this._enterPausedMode();
+        return;
+      }
+
       this._setStatus("error");
       this._scheduleReconnect();
     };
@@ -59,6 +81,7 @@ class SSEClient {
     this.es?.close();
     this.es = null;
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+    this.reconnectTimer = null;
     this._setStatus("disconnected");
   }
 
@@ -97,6 +120,80 @@ class SSEClient {
       this.connect();
       this.reconnectDelay = Math.min(this.reconnectDelay * 2, this.maxReconnectDelay);
     }, this.reconnectDelay);
+  }
+
+  private _enterPausedMode() {
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+    this._setStatus("paused");
+    this._scheduleResumeAtMarketOpen();
+  }
+
+  private _scheduleResumeAtMarketOpen() {
+    if (this.reconnectTimer) return;
+    const delay = this._msUntilNextMarketOpen();
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
+      this.consecutiveFailures = 0;
+      this.reconnectDelay = 3000;
+      this._setStatus("disconnected");
+      this.connect();
+    }, delay);
+  }
+
+  private _isMarketOpen() {
+    const parts = new Intl.DateTimeFormat("en-GB", {
+      timeZone: IST_TIMEZONE,
+      weekday: "short",
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+    }).formatToParts(new Date());
+
+    const weekday = parts.find((part) => part.type === "weekday")?.value;
+    const hour = Number(parts.find((part) => part.type === "hour")?.value ?? "0");
+    const minute = Number(parts.find((part) => part.type === "minute")?.value ?? "0");
+    const totalMinutes = hour * 60 + minute;
+    const openMinutes = MARKET_OPEN_HOUR * 60 + MARKET_OPEN_MINUTE;
+    const closeMinutes = MARKET_CLOSE_HOUR * 60 + MARKET_CLOSE_MINUTE;
+
+    if (weekday === "Sat" || weekday === "Sun") return false;
+    return totalMinutes >= openMinutes && totalMinutes <= closeMinutes;
+  }
+
+  private _msUntilNextMarketOpen() {
+    const now = new Date();
+
+    for (let daysAhead = 0; daysAhead <= 7; daysAhead += 1) {
+      const candidate = new Date(now.getTime() + daysAhead * 24 * 60 * 60 * 1000);
+      const dateParts = new Intl.DateTimeFormat("en-CA", {
+        timeZone: IST_TIMEZONE,
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+      }).formatToParts(candidate);
+      const weekday = new Intl.DateTimeFormat("en-GB", {
+        timeZone: IST_TIMEZONE,
+        weekday: "short",
+      }).format(candidate);
+
+      if (weekday === "Sat" || weekday === "Sun") continue;
+
+      const year = dateParts.find((part) => part.type === "year")?.value;
+      const month = dateParts.find((part) => part.type === "month")?.value;
+      const day = dateParts.find((part) => part.type === "day")?.value;
+
+      if (!year || !month || !day) continue;
+
+      const openUtc = new Date(`${year}-${month}-${day}T03:45:00.000Z`);
+      if (openUtc.getTime() > now.getTime()) {
+        return Math.max(openUtc.getTime() - now.getTime(), 60_000);
+      }
+    }
+
+    return 12 * 60 * 60 * 1000;
   }
 }
 

@@ -9,19 +9,17 @@ Flow:
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta
+from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from fastapi import APIRouter, Request, Response
 from fastapi.responses import RedirectResponse
-from sqlalchemy import select, update
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
 
 from app.api.deps import DB, CurrentUser
 from app.core.security import (
-    decrypt_token,
     encrypt_token,
     generate_oauth_state,
-    generate_session_id,
     sign_session_id,
     utc_now,
 )
@@ -38,6 +36,13 @@ router = APIRouter(prefix="/api/auth", tags=["auth"])
 logger = logging.getLogger(__name__)
 
 _OAUTH_STATE_TTL = timedelta(minutes=10)
+_AUTH_ERROR_MESSAGES = {
+    "oauth_denied": "OAuth access was denied. Please try again.",
+    "invalid_request": "Authentication request was incomplete. Please try again.",
+    "invalid_state": "Authentication session expired. Please try again.",
+    "upstox_inactive_segments": "No active Upstox segments are enabled for this account. Reactivate them in Upstox app or web, then try again.",
+    "token_exchange_failed": "Token exchange failed. Please try again.",
+}
 
 
 def _post_auth_redirect_url(settings) -> str:
@@ -45,6 +50,19 @@ def _post_auth_redirect_url(settings) -> str:
     if settings.upstox_redirect_uri.endswith(callback_path):
         return settings.upstox_redirect_uri[: -len(callback_path)] + "/"
     return "/"
+
+
+def _login_error_redirect(settings, error_code: str) -> RedirectResponse:
+    base_url = _post_auth_redirect_url(settings).rstrip("/")
+    target = f"{base_url}/login?auth_error={quote(error_code)}"
+    return RedirectResponse(url=target, status_code=302)
+
+
+def _map_upstox_auth_error(exc: UpstoxAuthError) -> str:
+    message = str(exc)
+    if "UDAPI100058" in message:
+        return "upstox_inactive_segments"
+    return "token_exchange_failed"
 
 
 def _set_session_cookie(response: Response, user_id: int, settings) -> None:
@@ -95,9 +113,10 @@ async def oauth_callback(
     settings = get_settings()
 
     if error:
-        raise HTTPException(status_code=400, detail=f"OAuth error: {error}")
+        logger.info("OAuth callback returned provider error: %s", error)
+        return _login_error_redirect(settings, "oauth_denied")
     if not code or not state:
-        raise HTTPException(status_code=400, detail="Missing code or state")
+        return _login_error_redirect(settings, "invalid_request")
 
     # Validate state (CSRF guard)
     result = await db.execute(
@@ -109,7 +128,7 @@ async def oauth_callback(
     )
     state_row = result.scalar_one_or_none()
     if not state_row:
-        raise HTTPException(status_code=400, detail="Invalid or expired OAuth state")
+        return _login_error_redirect(settings, "invalid_state")
 
     # One-time consumption
     state_row.used_at = utc_now()
@@ -119,8 +138,8 @@ async def oauth_callback(
     try:
         token_resp = await exchange_code_for_token(code)
     except UpstoxAuthError as exc:
-        logger.warning("Token exchange failed: %s", exc)
-        raise HTTPException(status_code=400, detail="Token exchange failed")
+        logger.warning("Token exchange failed: %s", exc, exc_info=True)
+        return _login_error_redirect(settings, _map_upstox_auth_error(exc))
 
     # Fetch user profile to get the upstox_user_id
     profile_resp = await get_profile(token_resp.access_token)

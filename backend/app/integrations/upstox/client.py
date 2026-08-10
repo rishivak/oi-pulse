@@ -15,6 +15,7 @@ import logging
 import random
 from datetime import date
 from typing import Any
+from urllib.parse import urlencode
 
 import httpx
 
@@ -113,7 +114,7 @@ def build_auth_url(state: str) -> str:
         "response_type": "code",
         "state": state,
     }
-    qs = "&".join(f"{k}={v}" for k, v in params.items())
+    qs = urlencode(params)
     return f"{settings.upstox_auth_base}/dialog?{qs}"
 
 
@@ -130,7 +131,10 @@ async def exchange_code_for_token(code: str) -> UpstoxTokenResponse:
                 "redirect_uri": settings.upstox_redirect_uri,
                 "grant_type": "authorization_code",
             },
-            headers={"Accept": "application/json"},
+            headers={
+                "Accept": "application/json",
+                "Content-Type": "application/x-www-form-urlencoded",
+            },
         )
         if response.status_code != 200:
             raise UpstoxAuthError(
