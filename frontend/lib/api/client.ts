@@ -20,12 +20,15 @@ const api = axios.create({
   withCredentials: true,  // include session cookie on all requests
 });
 
-// Redirect to login on 401
+// Redirect to login on 401 (skip when already on the login page)
 api.interceptors.response.use(
   (r) => r,
   (err) => {
     if (err.response?.status === 401 && typeof window !== "undefined") {
-      window.location.href = "/login";
+      const path = window.location.pathname;
+      if (!path.startsWith("/login")) {
+        window.location.href = "/login";
+      }
     }
     return Promise.reject(err);
   }
@@ -35,6 +38,7 @@ api.interceptors.response.use(
 
 export const authApi = {
   me: () => api.get<User>("/auth/me").then((r) => r.data),
+  offlineSession: () => api.post<User>("/auth/offline-session").then((r) => r.data),
   logout: () => api.post("/auth/logout"),
   loginUrl: "/api/auth/login",
 };

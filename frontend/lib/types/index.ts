@@ -1,10 +1,15 @@
 // ── Domain types ──────────────────────────────────────────────────────────────
 
+export type AccessMode = "live" | "stored";
+
 export interface User {
   id: number;
   email: string;
   display_name: string | null;
   is_active: boolean;
+  live_market_access: boolean;
+  access_mode: AccessMode;
+  upstox_connected: boolean;
 }
 
 export interface UserPreferences {

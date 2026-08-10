@@ -8,12 +8,12 @@ from fastapi import APIRouter, Query
 from sqlalchemy import select, desc
 from sqlalchemy.orm import selectinload
 
-from app.api.deps import DB, CurrentUser, UpstoxToken
+from app.api.deps import DB, CurrentUser, OptionalUpstoxToken
 from app.core.config import UNDERLYING_INSTRUMENT_KEYS
 from app.db.models.instrument import OptionExpiry
 from app.db.models.market_data import OITimeBar
 from app.db.models.snapshot import OISnapshot, OIStrikeSnapshot
-from app.integrations.upstox.client import get_option_expiries
+from app.integrations.upstox.client import UpstoxError, get_option_expiries
 from app.services.analytics_service import classify_oi_interpretation, safe_change_pcr, safe_pcr
 from app.services.timeframe_service import MarketPoint, Timeframe, aggregate_points, bucket_start
 
@@ -39,11 +39,40 @@ async def list_underlyings(_: CurrentUser):
     return {"underlyings": list(UNDERLYING_INSTRUMENT_KEYS.keys())}
 
 
+async def _stored_expiry_strings(
+    db: DB,
+    user: CurrentUser,
+    underlying: str,
+) -> list[str]:
+    """Return expiry dates available offline from option_expiries and user snapshots."""
+    underlying_upper = underlying.upper()
+
+    expiry_result = await db.execute(
+        select(OptionExpiry.expiry_date)
+        .where(OptionExpiry.underlying == underlying_upper)
+        .order_by(OptionExpiry.expiry_date)
+    )
+    dates = {row[0] for row in expiry_result.all()}
+
+    snap_result = await db.execute(
+        select(OptionExpiry.expiry_date)
+        .join(OISnapshot, OISnapshot.expiry_id == OptionExpiry.id)
+        .where(
+            OISnapshot.user_id == user.id,
+            OISnapshot.underlying == underlying_upper,
+        )
+        .distinct()
+    )
+    dates.update(row[0] for row in snap_result.all())
+
+    return [d.isoformat() for d in sorted(dates)]
+
+
 @router.get("/expiries")
 async def list_expiries(
     underlying: str,
     user: CurrentUser,
-    token: UpstoxToken,
+    token: OptionalUpstoxToken,
     db: DB,
 ):
     instrument_key = UNDERLYING_INSTRUMENT_KEYS.get(underlying.upper())
@@ -51,22 +80,29 @@ async def list_expiries(
         from fastapi import HTTPException
         raise HTTPException(400, f"Unknown underlying: {underlying}")
 
-    expiry_strings = await get_option_expiries(token, instrument_key)
+    if token:
+        try:
+            expiry_strings = await get_option_expiries(token, instrument_key)
 
-    # Sync to DB
-    for es in expiry_strings:
-        expiry_date = date.fromisoformat(es)
-        result = await db.execute(
-            select(OptionExpiry).where(
-                OptionExpiry.underlying == underlying.upper(),
-                OptionExpiry.expiry_date == expiry_date,
-            )
-        )
-        if result.scalar_one_or_none() is None:
-            db.add(OptionExpiry(underlying=underlying.upper(), expiry_date=expiry_date))
-    await db.commit()
+            # Sync to DB when live Upstox is available
+            for es in expiry_strings:
+                expiry_date = date.fromisoformat(es)
+                result = await db.execute(
+                    select(OptionExpiry).where(
+                        OptionExpiry.underlying == underlying.upper(),
+                        OptionExpiry.expiry_date == expiry_date,
+                    )
+                )
+                if result.scalar_one_or_none() is None:
+                    db.add(OptionExpiry(underlying=underlying.upper(), expiry_date=expiry_date))
+            await db.commit()
 
-    return {"underlying": underlying.upper(), "expiries": expiry_strings}
+            return {"underlying": underlying.upper(), "expiries": expiry_strings}
+        except UpstoxError:
+            pass  # fall through to stored expiries
+
+    stored = await _stored_expiry_strings(db, user, underlying)
+    return {"underlying": underlying.upper(), "expiries": stored}
 
 
 @router.get("/latest")

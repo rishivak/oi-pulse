@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { collectorApi, settingsApi } from "@/lib/api/client";
+import { authApi, collectorApi, settingsApi } from "@/lib/api/client";
 import { queryKeys } from "@/lib/api/queryKeys";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -22,6 +22,14 @@ export default function SettingsPage() {
   const qc = useQueryClient();
   const [newUnderlying, setNewUnderlying] = useState("NIFTY");
   const [newInterval, setNewInterval] = useState<Interval>(5);
+
+  const { data: me } = useQuery({
+    queryKey: queryKeys.me,
+    queryFn: authApi.me,
+    staleTime: 30_000,
+  });
+
+  const liveAccess = me?.live_market_access === true;
 
   const { data: jobs = [] } = useQuery({
     queryKey: queryKeys.collectorStatus,
@@ -49,6 +57,13 @@ export default function SettingsPage() {
     <div className="mx-auto max-w-3xl space-y-6 p-6">
       <h1 className="text-lg font-semibold text-terminal-text">Settings</h1>
 
+      {!liveAccess && (
+        <div className="rounded border border-terminal-border bg-terminal-surface px-4 py-3 text-sm text-terminal-muted">
+          You are in <span className="font-medium text-terminal-text">stored data</span> mode.
+          Browse last collected snapshots; start collector after reconnecting Upstox with active segments.
+        </div>
+      )}
+
       {/* Collector control */}
       <Card>
         <CardHeader>
@@ -71,12 +86,24 @@ export default function SettingsPage() {
             <Button
               size="sm"
               onClick={() => startMut.mutate()}
-              disabled={startMut.isPending}
+              disabled={startMut.isPending || !liveAccess}
               className="gap-1.5"
+              title={!liveAccess ? "Live collection needs an active Upstox session" : undefined}
             >
               <Play className="h-3.5 w-3.5" aria-hidden /> Start Collector
             </Button>
           </div>
+          {!liveAccess && (
+            <p className="text-xs text-terminal-muted">
+              Start Collector is disabled until Upstox live access is restored.
+            </p>
+          )}
+          {startMut.isError && (
+            <p className="text-xs text-bear" role="alert">
+              {(startMut.error as { response?: { data?: { detail?: string } } })?.response?.data
+                ?.detail ?? "Failed to start collector."}
+            </p>
+          )}
 
           {/* Active jobs */}
           {jobs.length === 0 ? (
@@ -133,7 +160,13 @@ export default function SettingsPage() {
         <CardHeader>
           <CardTitle>Upstox Connection</CardTitle>
         </CardHeader>
-        <CardContent>
+        <CardContent className="space-y-3">
+          <div className="flex items-center gap-2 text-sm">
+            <span className="text-terminal-muted">Access mode:</span>
+            <Badge variant={liveAccess ? "bull" : "neutral"}>
+              {liveAccess ? "Live" : "Stored data"}
+            </Badge>
+          </div>
           <div className="flex items-center gap-3">
             <Button
               variant="outline"

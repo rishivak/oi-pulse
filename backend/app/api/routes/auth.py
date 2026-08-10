@@ -1,10 +1,11 @@
 """OAuth 2.0 authentication routes.
 
 Flow:
-  GET  /api/auth/login      → redirect to Upstox auth dialog
-  GET  /api/auth/callback   → exchange code, save tokens, set session cookie
-  POST /api/auth/logout     → clear session cookie
-  GET  /api/auth/me         → current user info
+  GET  /api/auth/login            → redirect to Upstox auth dialog
+  GET  /api/auth/callback         → exchange code, save tokens, set session cookie
+  POST /api/auth/offline-session  → local session from stored snapshots (no live Upstox)
+  POST /api/auth/logout           → clear session cookie
+  GET  /api/auth/me               → current user info + live vs stored access flags
 """
 from __future__ import annotations
 
@@ -12,11 +13,11 @@ import logging
 from datetime import timedelta
 from urllib.parse import quote
 
-from fastapi import APIRouter, Request, Response
+from fastapi import APIRouter, HTTPException, Request, Response, status
 from fastapi.responses import RedirectResponse
-from sqlalchemy import select
+from sqlalchemy import desc, select
 
-from app.api.deps import DB, CurrentUser
+from app.api.deps import DB, CurrentUser, has_live_market_access
 from app.core.security import (
     encrypt_token,
     generate_oauth_state,
@@ -24,6 +25,7 @@ from app.core.security import (
     utc_now,
 )
 from app.db.models.operational import AuditLog
+from app.db.models.snapshot import OISnapshot
 from app.db.models.user import OAuthState, UpstoxAccount, User, UserPreference
 from app.integrations.upstox.client import (
     UpstoxAuthError,
@@ -199,6 +201,72 @@ async def oauth_callback(
     return redirect_response
 
 
+@router.post("/offline-session")
+async def offline_session(request: Request, response: Response, db: DB):
+    """Issue a local session for browsing stored snapshots without live Upstox access.
+
+    Resolution order (single-user local terminal):
+      1. User who owns the most recent OI snapshot
+      2. Most recently updated active user
+      3. 404 if neither exists
+    """
+    from app.core.config import get_settings
+
+    settings = get_settings()
+
+    snap_result = await db.execute(
+        select(OISnapshot.user_id)
+        .order_by(desc(OISnapshot.created_at))
+        .limit(1)
+    )
+    user_id = snap_result.scalar_one_or_none()
+
+    user: User | None = None
+    if user_id is not None:
+        user_result = await db.execute(
+            select(User).where(User.id == user_id, User.is_active == True)
+        )
+        user = user_result.scalar_one_or_none()
+
+    if user is None:
+        user_result = await db.execute(
+            select(User)
+            .where(User.is_active == True)
+            .order_by(desc(User.updated_at))
+            .limit(1)
+        )
+        user = user_result.scalar_one_or_none()
+
+    if user is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No stored data yet — connect Upstox once during market hours.",
+        )
+
+    db.add(AuditLog(
+        user_id=user.id,
+        action="offline_login",
+        resource_type="session",
+        ip_address=request.client.host,
+        status="success",
+        details={"access_mode": "stored"},
+    ))
+    await db.commit()
+
+    _set_session_cookie(response, user.id, settings)
+    live = await has_live_market_access(user, db)
+    return {
+        "status": "ok",
+        "id": user.id,
+        "email": user.email,
+        "display_name": user.display_name,
+        "is_active": user.is_active,
+        "live_market_access": live,
+        "access_mode": "live" if live else "stored",
+        "upstox_connected": live,
+    }
+
+
 @router.post("/logout")
 async def logout(response: Response, user: CurrentUser, db: DB, request: Request):
     db.add(AuditLog(
@@ -213,10 +281,14 @@ async def logout(response: Response, user: CurrentUser, db: DB, request: Request
 
 
 @router.get("/me")
-async def me(user: CurrentUser):
+async def me(user: CurrentUser, db: DB):
+    live = await has_live_market_access(user, db)
     return {
         "id": user.id,
         "email": user.email,
         "display_name": user.display_name,
         "is_active": user.is_active,
+        "live_market_access": live,
+        "access_mode": "live" if live else "stored",
+        "upstox_connected": live,
     }

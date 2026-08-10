@@ -1,12 +1,12 @@
 """Collector control endpoints — start/stop/status per user."""
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
-from app.api.deps import DB, CurrentUser
+from app.api.deps import DB, CurrentUser, has_live_market_access
 from app.core.config import BucketInterval, SUPPORTED_UNDERLYINGS
 from app.db.models.operational import CollectorJob
 
@@ -28,6 +28,12 @@ async def start_collector(body: CollectorStartRequest, user: CurrentUser, db: DB
         raise HTTPException(400, f"Unsupported underlying: {body.underlying}")
     if body.interval_min not in list(BucketInterval):
         raise HTTPException(400, f"Unsupported interval: {body.interval_min}")
+
+    if not await has_live_market_access(user, db):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Live collection needs an active Upstox session.",
+        )
 
     stmt = (
         pg_insert(CollectorJob)

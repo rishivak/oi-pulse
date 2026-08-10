@@ -1,9 +1,12 @@
 "use client";
 
+import { useQuery } from "@tanstack/react-query";
 import { useSSEStatus } from "@/lib/realtime/sse-client";
+import { authApi } from "@/lib/api/client";
+import { queryKeys } from "@/lib/api/queryKeys";
 import { fmtDateTime, fmtPrice } from "@/lib/utils/formatters";
 import { cn } from "@/lib/utils";
-import { Wifi, WifiOff, Loader2 } from "lucide-react";
+import { Database, Wifi, WifiOff, Loader2 } from "lucide-react";
 
 interface DashboardHeaderProps {
   underlying: string;
@@ -17,37 +20,53 @@ interface DashboardHeaderProps {
 
 function ConnectionIndicator() {
   const status = useSSEStatus();
-  const label =
-    status === "connected"
-      ? "Live"
-      : status === "connecting"
-        ? "Connecting"
-        : status === "paused"
-          ? "No Live Feed"
-          : "Disconnected";
+  const { data: me } = useQuery({
+    queryKey: queryKeys.me,
+    queryFn: authApi.me,
+    staleTime: 30_000,
+    retry: false,
+  });
+
+  const storedMode = me?.access_mode === "stored" || me?.live_market_access === false;
+
+  let label: string;
+  let tone: "bull" | "muted" | "stored" | "bear";
+
+  if (storedMode) {
+    label = "Stored data";
+    tone = "stored";
+  } else if (status === "connected") {
+    label = "Live";
+    tone = "bull";
+  } else if (status === "connecting") {
+    label = "Connecting";
+    tone = "muted";
+  } else if (status === "paused") {
+    label = "No Live Feed";
+    tone = "stored";
+  } else {
+    label = "Disconnected";
+    tone = "bear";
+  }
 
   return (
     <span
       className={cn(
         "flex items-center gap-1.5 rounded px-2 py-0.5 text-xs font-medium",
-        status === "connected" && "bg-bull-dim text-bull",
-        status === "connecting" && "bg-terminal-border text-terminal-muted",
-        status === "paused" && "bg-terminal-border text-terminal-text",
-        status === "error" || status === "disconnected"
-          ? "bg-bear-dim text-bear"
-          : "",
+        tone === "bull" && "bg-bull-dim text-bull",
+        tone === "muted" && "bg-terminal-border text-terminal-muted",
+        tone === "stored" && "bg-terminal-border text-terminal-text",
+        tone === "bear" && "bg-bear-dim text-bear",
       )}
       role="status"
       aria-live="polite"
     >
-      {status === "connected" && (
-        <Wifi className="h-3 w-3 status-connected" aria-hidden />
+      {tone === "bull" && <Wifi className="h-3 w-3 status-connected" aria-hidden />}
+      {status === "connecting" && !storedMode && (
+        <Loader2 className="h-3 w-3 animate-spin" aria-hidden />
       )}
-      {status === "connecting" && <Loader2 className="h-3 w-3 animate-spin" aria-hidden />}
-      {status === "paused" && <WifiOff className="h-3 w-3" aria-hidden />}
-      {(status === "error" || status === "disconnected") && (
-        <WifiOff className="h-3 w-3" aria-hidden />
-      )}
+      {tone === "stored" && <Database className="h-3 w-3" aria-hidden />}
+      {tone === "bear" && <WifiOff className="h-3 w-3" aria-hidden />}
       {label}
     </span>
   );
