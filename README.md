@@ -180,6 +180,12 @@ The worker will start collecting snapshots every 5 minutes during market hours (
 
 ## 10 — Podman Operations
 
+If any macOS/Linux script fails with "Permission denied", run this once from repo root:
+
+```bash
+chmod +x ./infra/scripts/podman-up.sh ./infra/scripts/podman-down.sh ./infra/scripts/podman-reset-data.sh ./infra/scripts/podman-machine-up.sh ./scripts/start-local.sh ./scripts/status-local.sh
+```
+
 Stop the local stack:
 
 ```powershell
