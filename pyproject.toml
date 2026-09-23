@@ -1,0 +1,89 @@
+[project]
+name = "oipulse"
+version = "2.0.0a1"
+description = "OI Pulse v2 — options market intelligence, research and trading platform"
+requires-python = ">=3.12"
+
+# Phase 1 runtime dependencies. Deliberately short: oipulse.core is stdlib-only
+# (AD-28), so nothing here is needed to import or test the foundation layer.
+dependencies = [
+  "fastapi==0.115.0",
+  "uvicorn[standard]==0.30.6",
+  "sqlalchemy==2.0.35",
+  "asyncpg==0.29.0",
+  "alembic==1.13.3",
+  "redis[hiredis]==5.0.8",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest==8.3.3",
+  "pytest-asyncio==0.24.0",
+  "ruff==0.16.5",
+  "mypy==1.11.2",
+  "import-linter==2.1",
+]
+
+[tool.setuptools.packages.find]
+include = ["oipulse*"]
+
+# ---------------------------------------------------------------- pytest
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+# Phase 1 tests are unittest.TestCase so they run under `python -m unittest` with no
+# third-party package installed. pytest collects them natively.
+python_files = ["test_*.py"]
+
+# ------------------------------------------------------------------ ruff
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+exclude = ["backend", "frontend", ".venv", "oipulse/migrations/versions"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "C4", "SIM", "RUF"]
+ignore = [
+  "E501",    # line length is handled by the formatter
+  "B008",    # FastAPI Depends() in defaults is idiomatic
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["E402"]  # sys.path bootstrap must precede imports
+
+# ------------------------------------------------------------------ mypy
+[tool.mypy]
+python_version = "3.12"
+packages = ["oipulse"]
+strict = true
+warn_unreachable = true
+exclude = ["oipulse/migrations/"]
+
+[[tool.mypy.overrides]]
+module = ["alembic.*", "fastapi.*"]
+ignore_missing_imports = true
+
+# --------------------------------------------------------- import-linter
+# Mirrors tools/check_import_boundaries.py. Both run in CI: the stdlib guard needs no
+# install and therefore cannot be skipped, while import-linter gives richer layering
+# analysis once dependencies are present. Redundancy is deliberate — the boundary
+# contract is the one thing that must not be silently disabled.
+[tool.importlinter]
+root_package = "oipulse"
+
+[[tool.importlinter.contracts]]
+name = "Layers point downward only"
+type = "layers"
+layers = [
+  "oipulse.api",
+  "oipulse.events",
+  "oipulse.persistence",
+  "oipulse.observability",
+  "oipulse.core",
+]
+
+[[tool.importlinter.contracts]]
+name = "core is dependency-free"
+type = "forbidden"
+source_modules = ["oipulse.core"]
+forbidden_modules = ["sqlalchemy", "fastapi", "redis", "httpx", "pydantic"]
