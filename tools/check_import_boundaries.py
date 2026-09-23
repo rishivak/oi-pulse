@@ -1,0 +1,251 @@
+#!/usr/bin/env python3
+"""Guard: dependency direction and layer boundaries.
+
+`docs/design/00-OVERVIEW.md` §5 and `15-TESTING.md` §5.
+
+Two rules make the layering real rather than decorative: dependencies point downward
+only, and the contract is enforced in CI rather than by convention. This is that
+enforcement.
+
+The contracts are declared for packages that do not exist yet (`analytics`, `trading`,
+`signals`, …). That is deliberate — Phase 1 exists so that *later phases cannot erode the
+design*. A contract armed before the package arrives is a contract the package is born
+under. `--require` asserts that a package now exists, so a phase can turn its own
+contract from latent to mandatory.
+
+Exit 0 clean, 1 on any violation.
+"""
+
+from __future__ import annotations
+
+import argparse
+import ast
+import sys
+from dataclasses import dataclass, field
+from pathlib import Path
+
+ROOT_PACKAGE = "oipulse"
+
+
+@dataclass(frozen=True)
+class Contract:
+    """A dependency rule over the root package's subpackages."""
+
+    name: str
+    #: Subpackage the rule constrains, e.g. "analytics".
+    subject: str
+    #: If set, the ONLY subpackages the subject may import (plus itself).
+    allowed_only: frozenset[str] | None = None
+    #: Subpackages the subject may never import.
+    forbidden: frozenset[str] = field(default_factory=frozenset)
+    #: Fully-qualified modules the subject may never import, e.g. "oipulse.core.clock".
+    forbidden_modules: frozenset[str] = field(default_factory=frozenset)
+    #: Third-party roots the subject may never import.
+    forbidden_external: frozenset[str] = field(default_factory=frozenset)
+    rationale: str = ""
+
+
+_DB_AND_IO = frozenset(
+    {
+        "sqlalchemy",
+        "asyncpg",
+        "psycopg2",
+        "psycopg",
+        "redis",
+        "httpx",
+        "requests",
+        "aiohttp",
+        "fastapi",
+        "starlette",
+    }
+)
+
+CONTRACTS: tuple[Contract, ...] = (
+    Contract(
+        name="analytics-is-pure",
+        subject="analytics",
+        allowed_only=frozenset({"marketstate", "core"}),
+        forbidden_modules=frozenset({f"{ROOT_PACKAGE}.core.clock"}),
+        forbidden_external=_DB_AND_IO,
+        rationale=(
+            "analytics must be pure: one implementation serves live, replay, research "
+            "and backtest. No DB, no HTTP, and no clock — available_at derives from the "
+            "state and the feature definition, never from 'now' (07-ANALYTICS.md §1)."
+        ),
+    ),
+    Contract(
+        name="nothing-imports-api",
+        subject="*",
+        forbidden=frozenset({"api"}),
+        rationale=(
+            "api/ is the outermost layer. Anything importing it has inverted the "
+            "dependency direction (00-OVERVIEW.md §5)."
+        ),
+    ),
+    Contract(
+        name="risk-is-independent",
+        subject="trading.risk",
+        forbidden=frozenset({"trading.oms", "trading.brokers", "strategies"}),
+        rationale=(
+            "The component that says 'no' must not depend on the components it "
+            "constrains. Risk must be testable with no trading infrastructure present "
+            "(11-TRADING.md §3)."
+        ),
+    ),
+    Contract(
+        name="core-is-dependency-free",
+        subject="core",
+        allowed_only=frozenset(),
+        forbidden_external=_DB_AND_IO | frozenset({"pydantic", "pydantic_settings", "structlog"}),
+        rationale=(
+            "core is the innermost layer, imported by every other including pure "
+            "analytics. Third-party dependencies here would leak into layers the "
+            "contract forbids from having them."
+        ),
+    ),
+)
+
+
+def _module_key(path: Path, root: Path) -> str:
+    """'oipulse/analytics/positioning/oi.py' -> 'analytics.positioning.oi'."""
+    rel = path.relative_to(root).with_suffix("")
+    parts = [p for p in rel.parts if p != "__init__"]
+    return ".".join(parts)
+
+
+def _imported_roots(tree: ast.AST) -> list[tuple[int, str]]:
+    """Every imported module path, with line numbers."""
+    out: list[tuple[int, str]] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                out.append((node.lineno, alias.name))
+        elif isinstance(node, ast.ImportFrom):
+            if node.level:  # relative import — stays within the subpackage
+                continue
+            if node.module:
+                out.append((node.lineno, node.module))
+    return out
+
+
+def _subpackage_of(dotted: str) -> str | None:
+    """'oipulse.analytics.positioning' -> 'analytics.positioning'."""
+    if dotted == ROOT_PACKAGE:
+        return ""
+    prefix = f"{ROOT_PACKAGE}."
+    if not dotted.startswith(prefix):
+        return None
+    return dotted[len(prefix) :]
+
+
+def _matches_subject(module_key: str, subject: str) -> bool:
+    if subject == "*":
+        return True
+    return module_key == subject or module_key.startswith(subject + ".")
+
+
+def _violates_target(target: str, pattern: str) -> bool:
+    return target == pattern or target.startswith(pattern + ".")
+
+
+def check(root: Path) -> list[str]:
+    findings: list[str] = []
+    for path in sorted(root.rglob("*.py")):
+        if "__pycache__" in path.parts:
+            continue
+        module_key = _module_key(path, root)
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        except SyntaxError as exc:
+            findings.append(f"{path}:{exc.lineno}: syntax error, cannot verify")
+            continue
+
+        imports = _imported_roots(tree)
+        for contract in CONTRACTS:
+            if not _matches_subject(module_key, contract.subject):
+                continue
+            for lineno, imported in imports:
+                internal = _subpackage_of(imported)
+                external_root = imported.split(".")[0]
+
+                if internal is not None:
+                    own = contract.subject if contract.subject != "*" else None
+                    if own and _violates_target(internal, own):
+                        continue  # a package may import itself
+                    top = internal.split(".")[0]
+
+                    if (
+                        contract.allowed_only is not None
+                        and internal
+                        and top not in contract.allowed_only
+                    ):
+                        findings.append(
+                            f"{path}:{lineno}: [{contract.name}] "
+                            f"{module_key} imports {imported}; allowed: "
+                            f"{sorted(contract.allowed_only) or '(none)'}"
+                        )
+                    for bad in contract.forbidden:
+                        if _violates_target(internal, bad):
+                            findings.append(
+                                f"{path}:{lineno}: [{contract.name}] "
+                                f"{module_key} must not import {imported}"
+                            )
+                    if imported in contract.forbidden_modules:
+                        findings.append(
+                            f"{path}:{lineno}: [{contract.name}] "
+                            f"{module_key} must not import {imported}"
+                        )
+                else:
+                    if external_root in contract.forbidden_external:
+                        findings.append(
+                            f"{path}:{lineno}: [{contract.name}] "
+                            f"{module_key} must not import third-party {imported}"
+                        )
+    return findings
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--root", default=ROOT_PACKAGE)
+    parser.add_argument(
+        "--require",
+        nargs="*",
+        default=[],
+        help="subpackages that must exist (a phase arms its own contract)",
+    )
+    parser.add_argument("--list-contracts", action="store_true")
+    args = parser.parse_args()
+
+    if args.list_contracts:
+        for c in CONTRACTS:
+            state = "armed"
+            print(f"  [{state}] {c.name}: subject={c.subject}")
+        return 0
+
+    root = Path(args.root)
+    if not root.exists():
+        print(f"check_import_boundaries: no such package {root}", file=sys.stderr)
+        return 2
+
+    missing = [r for r in args.require if not (root / Path(*r.split("."))).exists()]
+    if missing:
+        print(f"FAIL  required subpackages absent: {', '.join(missing)}")
+        return 1
+
+    findings = check(root)
+    if findings:
+        print("FAIL  layer boundary violations:")
+        for f in findings:
+            print(f"  {f}")
+        print("\nContracts:")
+        for c in CONTRACTS:
+            print(f"  {c.name}: {c.rationale}")
+        return 1
+
+    armed = ", ".join(c.name for c in CONTRACTS)
+    print(f"PASS  layer boundaries clean ({len(CONTRACTS)} contracts armed: {armed})")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

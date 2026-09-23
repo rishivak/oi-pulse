@@ -1,0 +1,96 @@
+# OI Pulse v2 — CI
+#
+# The Phase 1 gate (docs/design/20-ARCHITECTURE_FREEZE.md §9): "boundaries + clock
+# enforced in CI". The `gate` job below is that enforcement and is a required check.
+#
+# The gate deliberately needs NO third-party package. The guards are stdlib-only AST
+# scans, so the boundary contract cannot be disabled by a dependency problem, a resolver
+# failure or an offline runner. `18-ROADMAP.md` Phase 1 acceptance: "CI fails on a
+# boundary violation or a `datetime.now()` call."
+
+name: ci
+
+on:
+  push:
+    branches: [main, "phase*"]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gate:
+    name: Phase gate (architectural invariants)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # No `pip install` above this line, and that is the point: the architectural
+      # guards run on a bare interpreter.
+      - name: No wall-clock access outside core.clock
+        run: python tools/check_clock_access.py oipulse
+
+      - name: Layer boundaries and dependency direction
+        run: python tools/check_import_boundaries.py
+
+      - name: No unbounded repository reads
+        run: python tools/check_temporal_repository.py oipulse
+
+      - name: Foundation tests (stdlib only)
+        run: python -m unittest discover -s tests -t . -v
+
+  lint:
+    name: Lint and format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install ruff==0.16.5
+      - run: ruff check oipulse tools tests
+      - run: ruff format --check oipulse tools tests
+
+  typecheck:
+    name: Type check
+    runs-on: ubuntu-latest
+    continue-on-error: true # advisory until Phase 2 lands the typed storage layer
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install mypy==1.11.2
+      - run: mypy
+
+  contracts:
+    name: Import-linter contracts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install import-linter==2.1
+      # Redundant with tools/check_import_boundaries.py by design: the stdlib guard
+      # cannot be skipped, import-linter gives richer layering analysis. The boundary
+      # contract is the one thing that must not be silently disabled.
+      - run: lint-imports
+
+  tests:
+    name: Full suite
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -e ".[dev]"
+      - run: pytest -q
