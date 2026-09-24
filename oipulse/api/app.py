@@ -32,6 +32,7 @@ from oipulse.api.market_state import router as market_router
 from oipulse.api.paper_trading import router as paper_trading_router
 from oipulse.api.replay import router as replay_router
 from oipulse.api.research import router as research_router
+from oipulse.api.risk import router as risk_router
 from oipulse.api.signals import router as signals_router
 from oipulse.core.config import Settings
 from oipulse.observability.logging import get_logger
@@ -88,6 +89,12 @@ def create_app(settings: Settings) -> FastAPI:
     # response on this router states `mode: PAPER` and
     # `live_execution_available: false`.
     app.include_router(paper_trading_router)
+    # Phase 9. Risk is read-mostly over HTTP: policies, state, limit status and the
+    # decision audit. There is deliberately no endpoint that approves an intent --
+    # an approval is only ever the output of a server-side evaluation, so a client
+    # cannot forge one, and `/risk/evaluate` triggers the engine rather than
+    # accepting a verdict.
+    app.include_router(risk_router)
 
     # Readiness covers this process's own dependencies: PostgreSQL (durable truth),
     # Redis (coordination) and the packages the role needs locally. Phase 1 registered

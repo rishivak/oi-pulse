@@ -53,11 +53,21 @@ class TestDecisionExecutionSeparation(unittest.TestCase):
         self.assertIn("execution_state", parameters)
 
     def test_an_intent_is_not_automatically_a_fill(self) -> None:
-        """A rejected intent produces an order and no fill, and says why."""
+        """A refused intent produces no fill, and says why.
+
+        Since Phase 9 the refusal happens at the risk gate rather than at
+        execution: an account that cannot fund the trade fails `cash_sufficiency`
+        before an order is created. The property under test is unchanged -- an
+        intent is not automatically a fill, and the refusal states its cause -- but
+        the layer that owns it moved earlier, which is what a gate is for.
+        """
         rt = fx.runtime(acct=fx.account(cfg=fx.config(starting_cash=Decimal(10))))
         result = fx.submit(rt, fx.observations(), fx.intent())
         self.assertEqual(len(result.fills), 0)
-        self.assertEqual(result.orders[0].state, OrderState.REJECTED)
+        self.assertTrue(result.rejected)
+        self.assertEqual(len(result.orders), 0, "no order may exist without approval")
+        breaches = {limit.limit_id for limit in result.risk_decision.breaches()}
+        self.assertIn("cash_sufficiency", breaches)
 
 
 class TestKnowledgeHorizon(unittest.TestCase):
@@ -130,12 +140,23 @@ class TestFailurePaths(unittest.TestCase):
     """Brief §17. Every one of these must refuse explicitly, never fill silently."""
 
     def test_insufficient_cash_is_rejected_with_a_reason(self) -> None:
+        """Refused at the risk gate since Phase 9, with structured evidence.
+
+        `cash_sufficiency` is not optional in a policy, so this is always
+        evaluated. The reason is a `LimitEvaluation` carrying the requirement and
+        the availability, not a sentence -- Phase 9 brief §23.
+        """
         rt = fx.runtime(acct=fx.account(cfg=fx.config(starting_cash=Decimal(100))))
         result = fx.submit(rt, fx.observations(), fx.intent(quantity=50))
-        order = result.orders[0]
-        self.assertIs(order.state, OrderState.REJECTED)
-        self.assertIs(order.reject_reason, RejectReason.INSUFFICIENT_CASH)
-        self.assertIn("available", order.reject_detail)
+        self.assertTrue(result.rejected)
+        self.assertIs(result.reject_reason, RejectReason.RISK_REJECTED)
+        breach = next(
+            limit
+            for limit in result.risk_decision.breaches()
+            if limit.limit_id == "cash_sufficiency"
+        )
+        self.assertEqual(breach.limit_value, "100")
+        self.assertIsNotNone(breach.observed_value)
         self.assertEqual(rt.ledger.cash, Decimal(100), "no cash may move on a rejection")
 
     def test_an_invalid_quantity_is_refused_at_construction(self) -> None:
@@ -154,10 +175,20 @@ class TestFailurePaths(unittest.TestCase):
         self.assertIs(result.orders[0].reject_reason, RejectReason.EXCEEDS_ORDER_LIMIT)
 
     def test_an_unknown_instrument_has_no_price_and_is_rejected(self) -> None:
+        """No price means no evaluation, and no evaluation means no approval.
+
+        Since Phase 9 this is caught at the gate: the cash and notional limits
+        report `NOT_EVALUABLE` because nothing supplied a mark, and the engine
+        fails closed rather than assuming they would have passed. Nothing is
+        substituted for the missing price.
+        """
         rt = fx.runtime()
         result = fx.submit(rt, fx.observations(), fx.intent(instrument_id=999999))
-        self.assertIs(result.orders[0].reject_reason, RejectReason.NO_PRICE_AVAILABLE)
+        self.assertTrue(result.rejected)
         self.assertEqual(len(result.fills), 0)
+        unevaluable = {limit.limit_id for limit in result.risk_decision.unevaluable()}
+        self.assertIn("cash_sufficiency", unevaluable)
+        self.assertIn("could not be evaluated", result.risk_decision.reason)
 
     def test_an_unreliable_state_is_refused_rather_than_traded_against(self) -> None:
         """`11` §3 lists the stale-data check; trading on a state the system says it
@@ -235,12 +266,23 @@ class TestFailurePaths(unittest.TestCase):
         self.assertEqual(result.fills[0].price, Decimal(500))
 
     def test_all_or_none_refuses_a_partial(self) -> None:
-        rt = fx.runtime(model=fx.fill_model(partial_fills_enabled=True))
+        """An execution-layer rule, exercised with risk approving.
+
+        `all_or_none` is about what the venue can fill, not about what risk
+        permits, so the account is funded and the policy widened enough for the
+        intent to reach execution. Risk is still evaluated -- it is not bypassed --
+        it simply has nothing to object to.
+        """
+        rt = fx.runtime(
+            acct=fx.account(cfg=fx.config(starting_cash=Decimal("100000000"))),
+            model=fx.fill_model(partial_fills_enabled=True),
+        )
         result = fx.submit(
             rt,
             fx.observations(),
             fx.intent(quantity=100000, constraints=IntentConstraints(all_or_none=True)),
         )
+        self.assertTrue(result.risk_decision.is_approved, result.risk_decision.reason)
         self.assertEqual(len(result.fills), 0)
         self.assertIs(result.orders[0].reject_reason, RejectReason.ALL_OR_NONE_UNFILLABLE)
 

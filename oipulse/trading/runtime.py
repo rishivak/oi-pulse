@@ -55,7 +55,17 @@ from oipulse.trading.execution import PaperExecutionModel
 from oipulse.trading.intents import TradeIntent
 from oipulse.trading.ledger import PaperLedger
 from oipulse.trading.orders import PaperOrder, RejectReason
-from oipulse.trading.risk import UNEVALUATED_RISK, RiskDecisionRecord, RiskGate
+from oipulse.trading.risk import (
+    UNEVALUATED_RISK,
+    KillSwitchState,
+    PositionSnapshot,
+    RiskDecisionRecord,
+    RiskGate,
+    RiskState,
+    StateQualityInput,
+    VenueHealth,
+    build_exposure,
+)
 
 __all__ = ["PaperTradingRuntime", "SubmissionResult"]
 
@@ -136,6 +146,7 @@ class PaperTradingRuntime:
         #: is not: it opens a sequence gap that defers every later event.
         self._emitted_order_sequences: dict[str, set[int]] = {}
         self._duplicate_intents = 0
+        self._kill_switch = KillSwitchState()
 
     # ------------------------------------------------------------------ reading
 
@@ -236,9 +247,14 @@ class PaperTradingRuntime:
                 intent, at, RejectReason.INTENT_EXPIRED, "intent expired before submission"
             )
 
-        # 4. The risk seam. Appends a decision even when nothing evaluated it, so the
-        #    sequence exists from the first intent and Phase 9 slots in.
-        decision = self._risk.evaluate(intent, sequence_no=1, at=at)
+        # 4. The risk gate. A RiskState is assembled from the **decision** state --
+        #    what the strategy knew -- and never from the execution state, which
+        #    would let risk read information the decision did not have.
+        # Assembled at the evaluation moment: `11` §3 expects a later evaluation
+        # to see a later state. What it must not see is knowledge from after its
+        # own horizon, which the engine checks.
+        risk_state = self.risk_state(decision_state, at=at, knowledge_time=at)
+        decision = self._risk.evaluate(intent, risk_state, sequence_no=1, at=at)
         self._decisions[intent.intent_id] = (decision,)
         if not decision.is_approved:
             self._intents[intent.intent_id] = intent
@@ -251,6 +267,12 @@ class PaperTradingRuntime:
                 detail=decision.reason,
             )
         if not decision.is_actionable_at(at):
+            # Covers three distinct cases, all refusals: an expired
+            # `approved_until`, an approval of zero quantity, and a decision from a
+            # gate that did not actually evaluate anything. `11` §3 requires
+            # submitting against an expired approval to be refused rather than
+            # silently re-approved, and an unevaluated approval must never
+            # authorize an order now that a real engine exists.
             self._intents[intent.intent_id] = intent
             self._intents[key] = intent
             return SubmissionResult(
@@ -258,7 +280,11 @@ class PaperTradingRuntime:
                 risk_decision=decision,
                 rejected=True,
                 reject_reason=RejectReason.RISK_REJECTED,
-                detail="the risk approval has expired; re-evaluation is required",
+                detail=(
+                    f"the risk decision is not actionable at {at.isoformat()} "
+                    f"(status {decision.authorization_status(at).value}); "
+                    f"re-evaluation is required"
+                ),
             )
 
         # 5. One order per leg, with a deterministic id.
@@ -268,14 +294,21 @@ class PaperTradingRuntime:
 
         orders: list[PaperOrder] = []
         fills: list[Fill] = []
+        approved_by_leg = dict(decision.approved_legs)
         for index, leg in enumerate(intent.legs):
+            # Risk may allow less than was asked. The **intent is never rewritten**
+            # (brief §11): the reduction lives on the decision, and the order is
+            # sized to what risk allowed. A leg reduced to zero produces no order.
+            quantity = approved_by_leg.get(index, leg.quantity)
+            if quantity <= 0:
+                continue
             order = PaperOrder(
                 order_id=PaperOrder.derive_id(intent.intent_id, index, intent.account_id),
                 account_id=intent.account_id,
                 intent_id=intent.intent_id,
                 instrument_id=leg.instrument_id,
                 side=leg.side,
-                quantity=leg.quantity,
+                quantity=quantity,
                 order_type=leg.order_type,
                 limit_price=leg.limit_price,
                 created_at=at,
@@ -288,6 +321,10 @@ class PaperTradingRuntime:
                 knowledge_time=intent.knowledge_time,
                 decision_time=intent.decision_time,
                 config_digest=self._account.config.content_digest,
+                # The exact decision that let this order through, not the latest
+                # one for the intent (`02` §11).
+                authorizing_risk_decision_id=decision.risk_decision_id,
+                authorizing_decision_sequence=decision.sequence_no,
             )
 
             shape = PaperExecutionModel.validate_shape(
@@ -384,9 +421,24 @@ class PaperTradingRuntime:
         self._orders[order.order_id] = order
 
     def _refuse(
-        self, intent: TradeIntent, at: datetime, reason: RejectReason, detail: str
+        self,
+        intent: TradeIntent,
+        at: datetime,
+        reason: RejectReason,
+        detail: str,
+        *,
+        risk_state: RiskState | None = None,
     ) -> SubmissionResult:
-        decision = self._risk.evaluate(intent, sequence_no=1, at=at)
+        """Refuse before the gate ran, but still append a decision.
+
+        A refusal for an inactive account or an expired intent never reaches the
+        risk engine, yet the decision sequence must still exist -- `11` §3 makes it
+        the audit spine, and an intent with no decision at all is a gap a verifier
+        cannot distinguish from a lost record. The gate is asked against an empty
+        state so the record is honest about having evaluated nothing of substance.
+        """
+        state = risk_state if risk_state is not None else self._empty_risk_state(intent, at)
+        decision = self._risk.evaluate(intent, state, sequence_no=1, at=at)
         self._intents[intent.intent_id] = intent
         self._intents[intent.idempotency_key] = intent
         self._decisions[intent.intent_id] = (decision,)
@@ -397,6 +449,145 @@ class PaperTradingRuntime:
             reject_reason=reason,
             detail=detail,
         )
+
+    # ---------------------------------------------------------------- risk state
+
+    def risk_state(
+        self,
+        state: MarketState,
+        *,
+        at: datetime,
+        knowledge_time: datetime | None = None,
+    ) -> RiskState:
+        """Assemble the snapshot the risk gate reads. Deterministic.
+
+        Built from this account's ledger and the supplied `MarketState`, which must
+        be the **decision** state. Nothing is fetched: every number comes from an
+        object the caller already had, which is what lets `risk_state_ref` stand as
+        proof of what risk saw.
+
+        Greeks are deliberately **not** populated here. `15` of the Phase 9 brief
+        forbids a second analytics engine, and portfolio greeks are a Phase 4
+        feature that the caller supplies; leaving them absent makes the
+        greek-exposure limits report `NOT_EVALUABLE`, which fails closed, rather
+        than passing on a zero nobody computed.
+        """
+        marks = self.marks_from(state)
+        snapshot = self._ledger.snapshot(as_of=at, marks=marks)
+        instruments = self._instrument_groups(state)
+
+        positions = tuple(
+            PositionSnapshot(
+                instrument_id=position.instrument_id,
+                quantity=position.quantity,
+                average_price=position.average_price,
+                underlying_id=instruments.get(position.instrument_id, (None, None, None))[0],
+                expiry_id=instruments.get(position.instrument_id, (None, None, None))[1],
+                strike=instruments.get(position.instrument_id, (None, None, None))[2],
+                mark=marks.get(position.instrument_id),
+            )
+            for position in self._ledger.positions()
+        )
+
+        realized = snapshot.realized_pnl
+        unrealized = snapshot.unrealized_pnl
+        total = realized + unrealized
+        opening = self._account.config.starting_cash
+
+        return RiskState(
+            account_id=self._account.account_id,
+            as_of=at,
+            knowledge_time=knowledge_time if knowledge_time is not None else at,
+            cash=snapshot.cash,
+            reserved_cash=snapshot.reserved_cash,
+            equity=snapshot.equity,
+            positions=positions,
+            exposure=build_exposure(positions),
+            # Every instrument the state prices, not only those held: an opening
+            # trade must still have its notional and cash requirement checkable.
+            marks=tuple(sorted(marks.items())),
+            # Grouping for every instrument the state knows, so an opening trade
+            # in a new underlying is still groupable.
+            instrument_underlying=tuple(
+                sorted(
+                    (iid, group[0]) for iid, group in instruments.items() if group[0] is not None
+                )
+            ),
+            quality=StateQualityInput(
+                status=state.quality.status.value,
+                coverage_ratio=Decimal(str(state.quality.coverage_ratio)),
+                staleness=state.quality.staleness_p95,
+                market_state_ref=state.content_digest(),
+                build_context_id=state.build_context_id,
+            ),
+            kill_switch=self._kill_switch,
+            realized_pnl=realized,
+            unrealized_pnl=unrealized,
+            # Positive magnitudes: a profit is not a loss of a negative amount.
+            daily_loss=max(-total, Decimal(0)),
+            drawdown=max(opening - snapshot.equity, Decimal(0)),
+            position_by_strategy=self._position_by_strategy(),
+            pending_intent_ids=tuple(o.intent_id for o in self.open_orders()),
+            orders_in_interval=len(self._orders),
+            venue_health=VenueHealth.PAPER_SIMULATED,
+        )
+
+    def _empty_risk_state(self, intent: TradeIntent, at: datetime) -> RiskState:
+        """A state carrying only the ledger, for refusals that never reach a market.
+
+        Deliberately has `StateQualityInput.status == "UNKNOWN"`, so if a real
+        engine ever *did* evaluate against it, the data check would report
+        `NOT_EVALUABLE` and fail closed rather than pass.
+        """
+        return RiskState(
+            account_id=self._account.account_id,
+            as_of=at,
+            knowledge_time=at,
+            cash=self._ledger.cash,
+            reserved_cash=self._ledger.reserved_cash,
+            equity=self._ledger.cash,
+            kill_switch=self._kill_switch,
+            venue_health=VenueHealth.PAPER_SIMULATED,
+        )
+
+    def set_kill_switch(self, switch: KillSwitchState) -> None:
+        """Engage or clear the kill switch. Immediate (`11` §3).
+
+        Operator-triggered and effective on the next evaluation -- there is no
+        queue to drain, because an intent is evaluated at submission.
+        """
+        self._kill_switch = switch
+
+    @property
+    def kill_switch(self) -> KillSwitchState:
+        return self._kill_switch
+
+    @staticmethod
+    def _instrument_groups(
+        state: MarketState,
+    ) -> dict[int, tuple[int | None, int | None, Decimal | None]]:
+        """instrument -> (underlying, expiry, strike), from the canonical state.
+
+        Read off the `MarketState` rather than looked up, so grouping cannot
+        disagree with the state the decision was made against.
+        """
+        out: dict[int, tuple[int | None, int | None, Decimal | None]] = {}
+        underlying = int(state.identity.underlying_id)
+        for expiry in state.expiries:
+            for leg in expiry.legs:
+                out[int(leg.instrument_id)] = (underlying, int(expiry.expiry_id), leg.strike)
+        return out
+
+    def _position_by_strategy(self) -> tuple[tuple[str, int], ...]:
+        """Absolute filled quantity per strategy, folded from this account's orders."""
+        totals: dict[str, int] = {}
+        for order in self.orders():
+            if not order.strategy_id:
+                continue
+            totals[order.strategy_id] = totals.get(order.strategy_id, 0) + abs(
+                order.filled_quantity
+            )
+        return tuple(sorted(totals.items()))
 
     @staticmethod
     def _reference_price(state: MarketState, instrument_id: int) -> Decimal | None:

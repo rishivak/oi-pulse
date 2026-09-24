@@ -230,6 +230,12 @@ class PaperOrder:
     knowledge_time: datetime | None = None
     decision_time: datetime | None = None
     config_digest: str = ""
+    #: The **exact** risk decision that authorized this order (`11-TRADING.md` §3,
+    #: `02-DATA_MODEL.md` §11). Not "a decision for this intent" -- the specific one,
+    #: identified by its sequence, because risk is re-evaluated and an order must
+    #: record which evaluation let it through rather than the latest one.
+    authorizing_risk_decision_id: str = ""
+    authorizing_decision_sequence: int | None = None
     extras: tuple[tuple[str, str], ...] = field(default_factory=tuple)
 
     def __post_init__(self) -> None:
@@ -237,6 +243,17 @@ class PaperOrder:
             raise ValueError("order quantity must be positive")
         if self.filled_quantity < 0 or self.filled_quantity > self.quantity:
             raise ValueError(f"filled_quantity {self.filled_quantity} outside [0, {self.quantity}]")
+        # An order naming an authorizing decision must name both halves of its
+        # composite key. `02` §11 keys the authorization on (intent_id, sequence_no);
+        # half of that key identifies no decision.
+        if bool(self.authorizing_risk_decision_id) != (
+            self.authorizing_decision_sequence is not None
+        ):
+            raise ValueError(
+                "authorizing_risk_decision_id and authorizing_decision_sequence must "
+                "be set together: the authorization is keyed on (intent_id, "
+                "sequence_no) and half of that key identifies no decision"
+            )
 
     # ------------------------------------------------------------------ identity
 
@@ -263,6 +280,20 @@ class PaperOrder:
     @property
     def remaining_quantity(self) -> int:
         return self.quantity - self.filled_quantity
+
+    @property
+    def is_authorized(self) -> bool:
+        """Whether this order carries the risk authorization it needs.
+
+        A `REJECTED` order is exempt: it never reached execution, and requiring
+        an approval for an order that was refused would be backwards. Everything
+        else must name the exact decision that let it through.
+        """
+        if self.state is OrderState.REJECTED:
+            return True
+        return bool(self.authorizing_risk_decision_id) and (
+            self.authorizing_decision_sequence is not None
+        )
 
     @property
     def is_terminal(self) -> bool:
@@ -391,5 +422,7 @@ class PaperOrder:
             "state_checkpoint_ref": self.state_checkpoint_ref,
             "build_context_id": self.build_context_id,
             "config_digest": self.config_digest,
+            "authorizing_risk_decision_id": self.authorizing_risk_decision_id,
+            "authorizing_decision_sequence": self.authorizing_decision_sequence,
             "events": [e.as_dict() for e in self.events],
         }

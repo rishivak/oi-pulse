@@ -162,6 +162,7 @@ class TestMigrationsApply(unittest.TestCase):
             PHASE6_TABLES,
             PHASE7_TABLES,
             PHASE8_TABLES,
+            PHASE9_TABLES,
         )
 
         self._upgrade_head()
@@ -175,6 +176,7 @@ class TestMigrationsApply(unittest.TestCase):
             *PHASE6_TABLES,
             *PHASE7_TABLES,
             *PHASE8_TABLES,
+            *PHASE9_TABLES,
         ):
             with self.subTest(table=table):
                 self.assertIn(table, present)
@@ -256,6 +258,7 @@ class TestMigrationsApply(unittest.TestCase):
             PHASE6_TABLES,
             PHASE7_TABLES,
             PHASE8_TABLES,
+            PHASE9_TABLES,
         )
 
         self._upgrade_head()
@@ -273,6 +276,7 @@ class TestMigrationsApply(unittest.TestCase):
             *PHASE6_TABLES,
             *PHASE7_TABLES,
             *PHASE8_TABLES,
+            *PHASE9_TABLES,
         ):
             with self.subTest(table=table):
                 self.assertNotIn(table, remaining, f"{table} survived the downgrade")
@@ -454,6 +458,126 @@ class TestMigrationsApply(unittest.TestCase):
 
         with self.assertRaises(sqlalchemy.exc.IntegrityError):
             self._query(insert_live)
+
+    def test_the_phase_9_constraints_are_enforced_by_postgres(self) -> None:
+        """Risk decision identity and the approval invariants, live.
+
+        A constraint present in a `.py` file and absent from the database enforces
+        nothing. Without the composite primary key, re-evaluation would overwrite
+        history instead of appending; without the CHECKs, a rejection could record
+        an approved quantity.
+        """
+        self._upgrade_head()
+        decision_defs = " ".join(
+            definition
+            for _, definition in self._rows(
+                "SELECT conname, pg_get_constraintdef(oid) FROM pg_constraint "
+                "WHERE conrelid = 'risk_decisions'::regclass"
+            )
+        )
+        self.assertIn("intent_id", decision_defs)
+        self.assertIn("sequence_no", decision_defs)
+        self.assertIn("APPROVED", decision_defs)
+
+        profile_defs = " ".join(
+            definition
+            for _, definition in self._rows(
+                "SELECT conname, pg_get_constraintdef(oid) FROM pg_constraint "
+                "WHERE conrelid = 'risk_profiles'::regclass AND contype = 'u'"
+            )
+        )
+        self.assertIn("policy_digest", profile_defs)
+
+    def test_an_order_cannot_reference_a_rejected_decision(self) -> None:
+        """`02` §11's trigger, exercised rather than read.
+
+        This is the check that cannot be done by reading source: it inserts an
+        order authorized by a REJECTED decision and requires the database to
+        refuse it. The composite FK cannot express "must be approved"; only the
+        trigger can.
+        """
+        import sqlalchemy.exc
+
+        self._upgrade_head()
+
+        async def seed_and_insert(conn: AsyncConnection) -> None:
+            await conn.execute(
+                sa.text(
+                    "INSERT INTO trade_accounts (account_id, owner, mode, status, "
+                    "currency, starting_cash, config, config_digest) VALUES "
+                    "('acc-r', 'x', 'PAPER', 'ACTIVE', 'INR', 1, '{}'::jsonb, 'd')"
+                )
+            )
+            await conn.execute(
+                sa.text(
+                    "INSERT INTO risk_decisions (intent_id, sequence_no, "
+                    "risk_decision_id, decision, evaluated, risk_state_ref, "
+                    "risk_evaluation_time, inputs_digest, policy_id, policy_version, "
+                    "policy_digest, requested_quantity, approved_quantity, "
+                    "limits_evaluated, decision_digest) VALUES "
+                    "('int-r', 1, 'rdec-r', 'REJECTED', true, 'rst-1', now(), "
+                    "'rin-1', 'P', 1, 'rpol-1', 10, 0, '[]'::jsonb, 'dd-1')"
+                )
+            )
+            await conn.execute(
+                sa.text(
+                    "INSERT INTO trade_orders (order_id, account_id, intent_id, "
+                    "instrument_id, side, quantity, order_type, state, created_at, "
+                    "config_digest, authorizing_risk_decision_id, "
+                    "authorizing_decision_sequence) VALUES "
+                    "('ord-r', 'acc-r', 'int-r', 1, 'BUY', 1, 'MARKET', 'ACCEPTED', "
+                    "now(), 'cfg', 'rdec-r', 1)"
+                )
+            )
+
+        with self.assertRaises(sqlalchemy.exc.DatabaseError):
+            self._query(seed_and_insert)
+
+    def test_an_order_cannot_reference_another_intents_decision(self) -> None:
+        """Brief §6 at the storage layer.
+
+        The FK is keyed on the order's own `intent_id`, so a decision belonging to
+        a different intent is not merely refused by the application -- there is no
+        row the database would match it to.
+        """
+        import sqlalchemy.exc
+
+        self._upgrade_head()
+
+        async def seed_and_insert(conn: AsyncConnection) -> None:
+            await conn.execute(
+                sa.text(
+                    "INSERT INTO trade_accounts (account_id, owner, mode, status, "
+                    "currency, starting_cash, config, config_digest) VALUES "
+                    "('acc-s', 'x', 'PAPER', 'ACTIVE', 'INR', 1, '{}'::jsonb, 'd')"
+                )
+            )
+            await conn.execute(
+                sa.text(
+                    "INSERT INTO risk_decisions (intent_id, sequence_no, "
+                    "risk_decision_id, decision, evaluated, risk_state_ref, "
+                    "risk_evaluation_time, inputs_digest, policy_id, policy_version, "
+                    "policy_digest, requested_quantity, approved_quantity, "
+                    "approved_until, limits_evaluated, decision_digest) VALUES "
+                    "('int-A', 1, 'rdec-A', 'APPROVED', true, 'rst-1', now(), "
+                    "'rin-1', 'P', 1, 'rpol-1', 10, 10, now() + interval '1 hour', "
+                    "'[]'::jsonb, 'dd-A')"
+                )
+            )
+            # The order belongs to int-B but points at int-A's approval.
+            await conn.execute(
+                sa.text(
+                    "INSERT INTO trade_orders (order_id, account_id, intent_id, "
+                    "instrument_id, side, quantity, order_type, state, created_at, "
+                    "config_digest, authorizing_risk_decision_id, "
+                    "authorizing_decision_sequence) VALUES "
+                    "('ord-s', 'acc-s', 'int-B', 1, 'BUY', 1, 'MARKET', 'ACCEPTED', "
+                    "now(), 'cfg', 'rdec-A', 1)"
+                )
+            )
+
+        with self.assertRaises(sqlalchemy.exc.DatabaseError):
+            self._query(seed_and_insert)
 
 
 if __name__ == "__main__":
