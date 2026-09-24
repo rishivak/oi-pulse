@@ -18,8 +18,16 @@ from dataclasses import dataclass, field
 __all__ = [
     "METRICS",
     "MetricsRegistry",
+    "record_alert_delivery",
+    "record_alert_suppressed",
+    "record_alert_triggered",
     "record_feature_computed",
     "record_feature_skipped",
+    "record_signal_created",
+    "record_signal_evaluation",
+    "record_signal_idempotent_repeat",
+    "record_signal_skipped",
+    "record_signal_transition",
 ]
 
 #: (metric name, sorted label pairs). Named because it appears in four signatures and
@@ -146,7 +154,78 @@ FEATURE_AVAILABILITY_LAG = "feature_availability_lag_seconds"
 #: readiness** rather than market time (`07-ANALYTICS.md` §3).
 FEATURE_INPUT_READINESS_LAG = "feature_input_readiness_lag_seconds"
 
+# --- Phase 5 signals and alerts (`16-OBSERVABILITY.md` §"Signals and alerts").
+SIGNALS_CREATED = "signals_created_total"
+SIGNAL_LIFECYCLE_TRANSITIONS = "signal_lifecycle_transitions_total"
+#: Evaluations that produced nothing, labelled by reason. Named separately from
+#: `signals_created_total` so "the pipeline is quiet" and "the pipeline is blocked"
+#: are distinguishable on a dashboard.
+SIGNAL_EVALUATIONS_SKIPPED = "signal_evaluations_skipped_total"
+SIGNAL_EVALUATION_DURATION = "signal_evaluation_duration_seconds"
+#: `available_at - market_time`. Confirms a signal never precedes its information.
+SIGNAL_AVAILABILITY_LAG = "signal_availability_lag_seconds"
+#: Source events whose re-processing was absorbed by the identity key rather than
+#: creating a second signal. A rising count is healthy; a zero count on a retrying
+#: consumer means idempotency is not actually being exercised.
+SIGNAL_IDEMPOTENT_REPEATS = "signal_idempotent_repeats_total"
+ALERTS_TRIGGERED = "alerts_triggered_total"
+ALERTS_SUPPRESSED = "alerts_suppressed_total"
+ALERTS_DELIVERED = "alerts_delivered_total"
+ALERTS_FAILED = "alerts_failed_total"
+ALERT_DELIVERY_DURATION = "alert_delivery_duration_seconds"
+
 METRICS = MetricsRegistry()
+
+
+def record_signal_created(
+    signal_type: str, version: int, *, status: str, availability_lag_seconds: float
+) -> None:
+    """One signal produced. Primitives only: `signals/` may not import this module."""
+    labels = {"type": signal_type, "version": str(version)}
+    METRICS.inc(SIGNALS_CREATED, {**labels, "status": status})
+    METRICS.observe(SIGNAL_AVAILABILITY_LAG, availability_lag_seconds, labels)
+
+
+def record_signal_transition(signal_type: str, from_status: str, to_status: str) -> None:
+    METRICS.inc(
+        SIGNAL_LIFECYCLE_TRANSITIONS,
+        {"type": signal_type, "from": from_status, "to": to_status},
+    )
+
+
+def record_signal_skipped(signal_type: str, version: int, reason: str) -> None:
+    METRICS.inc(
+        SIGNAL_EVALUATIONS_SKIPPED,
+        {"type": signal_type, "version": str(version), "reason": reason},
+    )
+
+
+def record_signal_evaluation(duration_seconds: float, *, rules: int) -> None:
+    METRICS.observe(SIGNAL_EVALUATION_DURATION, duration_seconds, {"rules": str(rules)})
+
+
+def record_signal_idempotent_repeat(signal_type: str) -> None:
+    """A repeated source event that updated one entity instead of creating a second."""
+    METRICS.inc(SIGNAL_IDEMPOTENT_REPEATS, {"type": signal_type})
+
+
+def record_alert_triggered(rule_id: str, channel: str, severity: str) -> None:
+    METRICS.inc(ALERTS_TRIGGERED, {"rule": rule_id, "channel": channel, "severity": severity})
+
+
+def record_alert_suppressed(rule_id: str, reason: str) -> None:
+    """Suppression is recorded, not silent: "why did I not get an alert?" has an answer."""
+    METRICS.inc(ALERTS_SUPPRESSED, {"rule": rule_id, "reason": reason})
+
+
+def record_alert_delivery(
+    channel: str, *, succeeded: bool, duration_seconds: float, attempts: int
+) -> None:
+    labels = {"channel": channel}
+    METRICS.inc(ALERTS_DELIVERED if succeeded else ALERTS_FAILED, labels)
+    METRICS.observe(
+        ALERT_DELIVERY_DURATION, duration_seconds, {**labels, "attempts": str(attempts)}
+    )
 
 
 def record_feature_computed(

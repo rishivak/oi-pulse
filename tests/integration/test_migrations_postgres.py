@@ -158,11 +158,18 @@ class TestMigrationsApply(unittest.TestCase):
             PHASE2_TABLES,
             PHASE3_TABLES,
             PHASE4_TABLES,
+            PHASE5_TABLES,
         )
 
         self._upgrade_head()
         present = self._tables()
-        for table in (*PHASE1_TABLES, *PHASE2_TABLES, *PHASE3_TABLES, *PHASE4_TABLES):
+        for table in (
+            *PHASE1_TABLES,
+            *PHASE2_TABLES,
+            *PHASE3_TABLES,
+            *PHASE4_TABLES,
+            *PHASE5_TABLES,
+        ):
             with self.subTest(table=table):
                 self.assertIn(table, present)
 
@@ -190,6 +197,7 @@ class TestMigrationsApply(unittest.TestCase):
             PARTITIONED_TABLES,
             PHASE3_PARTITIONED,
             PHASE4_PARTITIONED,
+            PHASE5_PARTITIONED,
         )
 
         self._upgrade_head()
@@ -202,7 +210,12 @@ class TestMigrationsApply(unittest.TestCase):
                 "GROUP BY parent.relname"
             )
         )
-        for table in (*PARTITIONED_TABLES, *PHASE3_PARTITIONED, *PHASE4_PARTITIONED):
+        for table in (
+            *PARTITIONED_TABLES,
+            *PHASE3_PARTITIONED,
+            *PHASE4_PARTITIONED,
+            *PHASE5_PARTITIONED,
+        ):
             with self.subTest(table=table):
                 self.assertGreater(counts.get(table, 0), 0, f"{table} has no partitions")
 
@@ -233,6 +246,7 @@ class TestMigrationsApply(unittest.TestCase):
             PHASE2_TABLES,
             PHASE3_TABLES,
             PHASE4_TABLES,
+            PHASE5_TABLES,
         )
 
         self._upgrade_head()
@@ -241,7 +255,13 @@ class TestMigrationsApply(unittest.TestCase):
         down = self._alembic("downgrade", "002")
         self.assertEqual(down.returncode, 0, f"{down.stdout}\n{down.stderr}")
         remaining = self._tables()
-        for table in (*PHASE1_TABLES, *PHASE2_TABLES, *PHASE3_TABLES, *PHASE4_TABLES):
+        for table in (
+            *PHASE1_TABLES,
+            *PHASE2_TABLES,
+            *PHASE3_TABLES,
+            *PHASE4_TABLES,
+            *PHASE5_TABLES,
+        ):
             with self.subTest(table=table):
                 self.assertNotIn(table, remaining, f"{table} survived the downgrade")
 
@@ -275,6 +295,51 @@ class TestMigrationsApply(unittest.TestCase):
             with self.subTest(column=column):
                 self.assertIn(column, definitions)
         self.assertIn("available_at >= computed_at", definitions)
+
+    def test_the_signal_and_alert_constraints_are_enforced_by_postgres(self) -> None:
+        """Phase 5's two idempotency constraints, asserted against the catalogue.
+
+        A constraint present in a `.py` file and absent from the database enforces
+        nothing: a signal identity missing `config_digest` would let a threshold
+        change overwrite history, and a missing `dedup_key` unique would let a
+        reprocessed event insert a second alert.
+        """
+        self._upgrade_head()
+        signal_defs = " ".join(
+            definition
+            for _, definition in self._rows(
+                "SELECT conname, pg_get_constraintdef(oid) FROM pg_constraint "
+                "WHERE conrelid = 'signal_signals'::regclass"
+            )
+        )
+        for column in (
+            "rule_version",
+            "occurrence",
+            "knowledge_horizon",
+            "build_context_id",
+            "config_digest",
+        ):
+            with self.subTest(column=column):
+                self.assertIn(column, signal_defs)
+        self.assertIn("available_at >= observed_at", signal_defs)
+
+        alert_defs = " ".join(
+            definition
+            for _, definition in self._rows(
+                "SELECT conname, pg_get_constraintdef(oid) FROM pg_constraint "
+                "WHERE conrelid = 'alert_occurrences'::regclass"
+            )
+        )
+        self.assertIn("dedup_key", alert_defs)
+
+        evidence_defs = " ".join(
+            definition
+            for _, definition in self._rows(
+                "SELECT conname, pg_get_constraintdef(oid) FROM pg_constraint "
+                "WHERE conrelid = 'signal_evidence'::regclass"
+            )
+        )
+        self.assertIn("SUPPORTING", evidence_defs)
 
 
 if __name__ == "__main__":
