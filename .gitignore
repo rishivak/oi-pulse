@@ -9,8 +9,11 @@ dist/
 build/
 .eggs/
 *.egg
+.venv
 .venv/
+venv
 venv/
+env
 env/
 .env
 .env.*

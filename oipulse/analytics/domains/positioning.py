@@ -605,14 +605,15 @@ def _pearson(xs: list[Decimal], ys: list[Decimal]) -> Decimal | None:
     n = len(xs)
     if n < 2:
         return None
-    mx = sum(xs) / Decimal(n)
-    my = sum(ys) / Decimal(n)
-    cov = sum((x - mx) * (y - my) for x, y in zip(xs, ys, strict=True))
-    vx = sum((x - mx) ** 2 for x in xs)
-    vy = sum((y - my) ** 2 for y in ys)
+    mx = sum(xs, start=Decimal(0)) / Decimal(n)
+    my = sum(ys, start=Decimal(0)) / Decimal(n)
+    cov = sum(((x - mx) * (y - my) for x, y in zip(xs, ys, strict=True)), start=Decimal(0))
+    vx = sum(((x - mx) * (x - mx) for x in xs), start=Decimal(0))
+    vy = sum(((y - my) * (y - my) for y in ys), start=Decimal(0))
     if vx == 0 or vy == 0:
         return None
-    return cov / (vx * vy).sqrt()
+    prod: Decimal = vx * vy
+    return cov / prod.sqrt()
 
 
 @feature(

@@ -61,6 +61,11 @@ def _partition_anchor() -> date:
     return date.fromisoformat(override) if override else _PARTITION_ANCHOR
 
 
+def _partition_days() -> int:
+    override = os.environ.get("OIPULSE_PARTITION_DAYS")
+    return int(override) if override else _INITIAL_PARTITION_DAYS
+
+
 def _identity_columns() -> list[sa.Column]:
     return [
         sa.Column("id", sa.BigInteger, sa.Identity(), nullable=False),
@@ -329,8 +334,9 @@ def upgrade() -> None:
     # and tools/check_migration_order.py fails the build if a parent is missing.
     # ---------------------------------------------------------------------------
     anchor = _partition_anchor()
+    days = _partition_days()
     for table in _PARTITIONED:
-        _create_daily_partitions(table, anchor, _INITIAL_PARTITION_DAYS)
+        _create_daily_partitions(table, anchor, days)
         _create_identity_indexes(table, partitioned=True)
 
     # OHLC and index are monthly in the design (`02` §9) and low volume here, so they

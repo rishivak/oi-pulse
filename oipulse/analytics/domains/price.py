@@ -118,12 +118,15 @@ def trend(ctx: ComputeContext) -> MetricValue | Unavailable:
         )
     n = Decimal(len(prices))
     xs = [Decimal(i) for i in range(len(prices))]
-    mx = sum(xs) / n
-    my = sum(prices) / n
-    denominator = sum((x - mx) ** 2 for x in xs)
+    mx = sum(xs, start=Decimal(0)) / n
+    my = sum(prices, start=Decimal(0)) / n
+    denominator = sum(((x - mx) * (x - mx) for x in xs), start=Decimal(0))
     if denominator == 0:  # pragma: no cover - impossible for n >= 2 distinct indices
         return unavailable(spec, scope, UnavailableReason.UNDEFINED, "zero variance in index")
-    slope = sum((x - mx) * (p - my) for x, p in zip(xs, prices, strict=True)) / denominator
+    slope = (
+        sum(((x - mx) * (p - my) for x, p in zip(xs, prices, strict=True)), start=Decimal(0))
+        / denominator
+    )
     return emit(spec, ctx, scope, slope, extra_inputs={"points": len(prices)})
 
 
