@@ -210,13 +210,13 @@ class PaperTradingRuntime:
         if key in self._intents:
             self._duplicate_intents += 1
             existing = self._intents[key]
-            orders = tuple(o for o in self.orders() if o.intent_id == existing.intent_id)
+            existing_orders = tuple(o for o in self.orders() if o.intent_id == existing.intent_id)
             decisions = self.decisions_for(existing.intent_id)
             return SubmissionResult(
                 intent=existing,
                 risk_decision=decisions[-1],
-                orders=orders,
-                fills=tuple(f for o in orders for f in self.fills_for_order(o.order_id)),
+                orders=existing_orders,
+                fills=tuple(f for o in existing_orders for f in self.fills_for_order(o.order_id)),
                 duplicate=True,
                 detail="this intent has already been processed; nothing was re-applied",
             )
@@ -241,6 +241,7 @@ class PaperTradingRuntime:
         decision = self._risk.evaluate(intent, sequence_no=1, at=at)
         self._decisions[intent.intent_id] = (decision,)
         if not decision.is_approved:
+            self._intents[intent.intent_id] = intent
             self._intents[key] = intent
             return SubmissionResult(
                 intent=intent,
@@ -250,6 +251,7 @@ class PaperTradingRuntime:
                 detail=decision.reason,
             )
         if not decision.is_actionable_at(at):
+            self._intents[intent.intent_id] = intent
             self._intents[key] = intent
             return SubmissionResult(
                 intent=intent,
@@ -260,6 +262,7 @@ class PaperTradingRuntime:
             )
 
         # 5. One order per leg, with a deterministic id.
+        self._intents[intent.intent_id] = intent
         self._intents[key] = intent
         self._record_intent_event(intent, at)
 
@@ -384,6 +387,7 @@ class PaperTradingRuntime:
         self, intent: TradeIntent, at: datetime, reason: RejectReason, detail: str
     ) -> SubmissionResult:
         decision = self._risk.evaluate(intent, sequence_no=1, at=at)
+        self._intents[intent.intent_id] = intent
         self._intents[intent.idempotency_key] = intent
         self._decisions[intent.intent_id] = (decision,)
         return SubmissionResult(
