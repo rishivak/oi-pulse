@@ -16,6 +16,7 @@ import unittest
 from datetime import timedelta
 from decimal import Decimal
 from pathlib import Path
+from typing import Any
 
 REPO = Path(__file__).resolve().parents[2]
 if str(REPO) not in sys.path:
@@ -326,6 +327,211 @@ class TestAlertApiSurface(unittest.TestCase):
         tables = (REPO / "oipulse/persistence/signal_tables.py").read_text(encoding="utf-8")
         for banned in ('"secret"', '"token"', '"password"', '"api_key"'):
             self.assertNotIn(banned, tables)
+
+
+class MockSignalReader:
+    def __init__(self, signals: list[Any] | None = None):
+        self._signals = signals or []
+
+    def list_signals(
+        self,
+        underlying_id: int | None = None,
+        signal_type: str | None = None,
+        signal_status: str | None = None,
+        market_time: Any = None,
+        knowledge_horizon: Any = None,
+        decision_time: Any = None,
+    ) -> list[Any]:
+        res = self._signals
+        if signal_type:
+            res = [s for s in res if s.signal_type == signal_type]
+        if signal_status:
+            res = [s for s in res if s.status.value == signal_status]
+        return res
+
+    def get_signal(self, signal_id: str) -> Any | None:
+        for s in self._signals:
+            if s.signal_id == signal_id:
+                return s
+        return None
+
+
+class MockAlertStore:
+    def __init__(self):
+        self.rules: dict[str, AlertRule] = {}
+        self.occurrences: dict[str, AlertOccurrence] = {}
+
+    def list_rules(self) -> list[AlertRule]:
+        return list(self.rules.values())
+
+    def get_rule(self, rule_id: str) -> AlertRule | None:
+        return self.rules.get(rule_id)
+
+    def create_rule(self, body: dict[str, Any]) -> AlertRule:
+        if "id" not in body or "signal_type" not in body or "channel" not in body:
+            raise KeyError("missing required field")
+        r = AlertRule(
+            id=body["id"],
+            signal_type=body["signal_type"],
+            channel=AlertChannel(body["channel"]),
+            severity=AlertSeverity(body.get("severity", "notice")),
+            min_strength=Decimal(str(body.get("min_strength", "0.5"))),
+        )
+        self.rules[r.id] = r
+        return r
+
+    def delete_rule(self, rule_id: str) -> bool:
+        if rule_id in self.rules:
+            del self.rules[rule_id]
+            return True
+        return False
+
+    def list_occurrences(
+        self,
+        rule_id: str | None = None,
+        signal_id: str | None = None,
+        since: Any = None,
+    ) -> list[AlertOccurrence]:
+        res = list(self.occurrences.values())
+        if rule_id:
+            res = [o for o in res if o.rule_id == rule_id]
+        if signal_id:
+            res = [o for o in res if o.signal_id == signal_id]
+        return res
+
+    def acknowledge(self, occurrence_id: str, by: str) -> AlertOccurrence | None:
+        occ = self.occurrences.get(occurrence_id)
+        if occ is None:
+            return None
+        updated = occ.acknowledge(at(0), by)
+        self.occurrences[occurrence_id] = updated
+        return updated
+
+
+class TestSignalsAndAlertsFastAPIEndpoints(unittest.TestCase):
+    """End-to-end HTTP tests of /signals and /alerts using FastAPI TestClient."""
+
+    def setUp(self):
+        from fastapi.testclient import TestClient
+
+        from oipulse.api.app import create_app
+        from oipulse.core.config import Settings
+
+        self.settings = Settings(
+            app_env="development",
+            role="api",
+            log_level="INFO",
+            instance_id="test-api-1",
+            database_url="postgresql+asyncpg://test:test@localhost:5432/test",
+            redis_url="redis://localhost:6379/0",
+            session_secret_key="a" * 32,
+            token_encryption_key="b" * 32,
+        )
+        self.app = create_app(self.settings)
+        self.client = TestClient(self.app)
+
+    def test_signals_types_returns_catalogue(self):
+        resp = self.client.get("/signals/types")
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertIn("data", body)
+        self.assertGreater(body["meta"]["count"], 0)
+
+    def test_signals_type_version_definition(self):
+        resp = self.client.get("/signals/types/PUT_SUPPORT_MIGRATION/versions/1")
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertEqual(body["data"]["signal_type"], "PUT_SUPPORT_MIGRATION")
+        self.assertEqual(body["data"]["version"], 1)
+
+    def test_unknown_signal_type_returns_404(self):
+        resp = self.client.get("/signals/types/NONEXISTENT_SIGNAL/versions/1")
+        self.assertEqual(resp.status_code, 404)
+
+    def test_signals_unconfigured_reader_returns_503(self):
+        resp = self.client.get("/signals", params={"market_time": at(0).isoformat()})
+        self.assertEqual(resp.status_code, 503)
+
+    def test_signals_knowledge_time_before_market_time_returns_422(self):
+        resp = self.client.get(
+            "/signals",
+            params={
+                "market_time": at(10).isoformat(),
+                "knowledge_time": at(5).isoformat(),
+            },
+        )
+        self.assertEqual(resp.status_code, 422)
+
+    def test_signals_with_configured_reader_returns_200(self):
+        test_sig = signal()
+        self.app.state.signal_reader = MockSignalReader([test_sig])
+        resp = self.client.get("/signals", params={"market_time": at(0).isoformat()})
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertEqual(body["meta"]["count"], 1)
+        self.assertEqual(body["data"][0]["signal_id"], test_sig.signal_id)
+
+    def test_signals_get_by_id_and_history(self):
+        test_sig = signal()
+        self.app.state.signal_reader = MockSignalReader([test_sig])
+        resp = self.client.get(f"/signals/{test_sig.signal_id}")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json()["data"]["signal_id"], test_sig.signal_id)
+
+        resp_hist = self.client.get(f"/signals/{test_sig.signal_id}/history")
+        self.assertEqual(resp_hist.status_code, 200)
+        self.assertIn("data", resp_hist.json())
+
+    def test_alerts_unconfigured_store_returns_503(self):
+        self.app.state.alert_store = None
+        self.assertEqual(self.client.get("/alerts/rules").status_code, 503)
+        self.assertEqual(self.client.get("/alerts/occurrences").status_code, 503)
+
+    def test_alerts_full_crud_and_test(self):
+        store = MockAlertStore()
+        self.app.state.alert_store = store
+        test_sig = signal()
+        self.app.state.signal_reader = MockSignalReader([test_sig])
+
+        # Create
+        create_resp = self.client.post(
+            "/alerts/rules",
+            json={
+                "id": "rule-fastapi-test",
+                "signal_type": "PUT_SUPPORT_MIGRATION",
+                "channel": "sse",
+                "severity": "important",
+                "min_strength": "0.6",
+            },
+        )
+        self.assertEqual(create_resp.status_code, 201)
+        rule_data = create_resp.json()["data"]
+        self.assertEqual(rule_data["id"], "rule-fastapi-test")
+
+        # List
+        list_resp = self.client.get("/alerts/rules")
+        self.assertEqual(list_resp.status_code, 200)
+        self.assertEqual(len(list_resp.json()["data"]), 1)
+
+        # Get
+        get_resp = self.client.get("/alerts/rules/rule-fastapi-test")
+        self.assertEqual(get_resp.status_code, 200)
+        self.assertEqual(get_resp.json()["data"]["id"], "rule-fastapi-test")
+
+        # Test / dry-run
+        test_resp = self.client.post(
+            "/alerts/rules/rule-fastapi-test/test",
+            params={"signal_id": test_sig.signal_id},
+        )
+        self.assertEqual(test_resp.status_code, 200)
+        self.assertTrue(test_resp.json()["meta"]["dry_run"])
+
+        # Delete
+        del_resp = self.client.delete("/alerts/rules/rule-fastapi-test")
+        self.assertEqual(del_resp.status_code, 204)
+
+        # Delete again -> 404
+        self.assertEqual(self.client.delete("/alerts/rules/rule-fastapi-test").status_code, 404)
 
 
 if __name__ == "__main__":

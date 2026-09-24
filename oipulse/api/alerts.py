@@ -18,7 +18,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from fastapi import APIRouter, Body, HTTPException, Query, Request, status
+from fastapi import APIRouter, Body, HTTPException, Query, Request, Response, status
 
 from oipulse.alerts.routing import AlertRouter
 from oipulse.alerts.serialisation import occurrence_to_dict, rule_to_dict
@@ -71,13 +71,18 @@ async def create_rule(request: Request, body: dict[str, Any] = Body(...)) -> dic
     return {"data": rule_to_dict(rule)}
 
 
-@router.delete("/rules/{rule_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_rule(request: Request, rule_id: str) -> None:
+@router.delete(
+    "/rules/{rule_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    response_class=Response,
+)
+async def delete_rule(request: Request, rule_id: str) -> Response:
     store = _store(request)
     if not store.delete_rule(rule_id):
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail=f"no alert rule {rule_id}"
         )
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.post("/rules/{rule_id}/test")
