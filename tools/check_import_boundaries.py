@@ -141,6 +141,67 @@ CONTRACTS: tuple[Contract, ...] = (
         ),
     ),
     Contract(
+        name="replay-is-pure",
+        subject="replay",
+        allowed_only=frozenset({"marketstate", "marketdata", "core"}),
+        forbidden_external=_DB_AND_IO,
+        rationale=(
+            "Replay drives the *same* builder as live processing (10-REPLAY.md §1), so "
+            "it must be constructible from observations and a state service alone. A "
+            "database or HTTP dependency here would mean a replay could only run where "
+            "production runs, and the shared-mechanism guarantee would be untestable."
+        ),
+    ),
+    Contract(
+        name="replay-never-reaches-a-broker-or-a-provider",
+        subject="replay",
+        forbidden=frozenset({"trading", "brokers", "alerts", "api"}),
+        forbidden_modules=frozenset(
+            {
+                f"{ROOT_PACKAGE}.marketdata.providers",
+                f"{ROOT_PACKAGE}.marketdata.upstox",
+            }
+        ),
+        rationale=(
+            "A replay reconstructs history from stored observations. Reaching a live "
+            "provider would make it non-deterministic; reaching a broker adapter or "
+            "the alert layer would let replaying the past emit a real order or a real "
+            "alert, which 10-REPLAY.md §8 forbids by namespacing replay events away "
+            "from the live outbox. `core.clock` is deliberately NOT forbidden here, "
+            "unlike in the pure layers: replay legitimately owns `ReplayClock`, whose "
+            "'now' is the replayed instant. The rule that matters -- no *wall* clock "
+            "-- is enforced for every module by tools/check_clock_access.py, which "
+            "distinguishes the two; a blanket import ban here could not."
+        ),
+    ),
+    Contract(
+        name="backtest-is-pure-and-cannot-trade",
+        subject="backtest",
+        allowed_only=frozenset(
+            {"replay", "research", "signals", "analytics", "marketstate", "core"}
+        ),
+        forbidden_modules=frozenset({f"{ROOT_PACKAGE}.core.clock"}),
+        forbidden_external=_DB_AND_IO,
+        rationale=(
+            "A backtest must not be able to submit an order, mutate live trading "
+            "state, or read the wall clock. `trading`, `brokers`, `alerts`, `api` and "
+            "`persistence` are all out of reach, so 'the backtest cannot touch "
+            "production' is a property of the import graph rather than a policy "
+            "someone has to remember. Persisting a result is the caller's job."
+        ),
+    ),
+    Contract(
+        name="no-phase-8-or-later-leakage",
+        subject="backtest",
+        forbidden=frozenset({"paper", "portfolio", "oms", "terminal"}),
+        rationale=(
+            "Phase 7 implements replay and backtesting only. Paper trading (Phase 8), "
+            "the OMS (Phase 10), portfolio attribution (Phase 11) and the terminal "
+            "(Phase 12) are later layers; importing one would build the next phase "
+            "early and skip its gate."
+        ),
+    ),
+    Contract(
         name="nothing-imports-api",
         subject="*",
         forbidden=frozenset({"api"}),

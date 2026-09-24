@@ -106,6 +106,12 @@ exhaustive = false
 layers = [
     "oipulse.run",
     "oipulse.api",
+    # Phase 7. `backtest` sits above `replay` because a backtest is a replay with a
+    # strategy attached (`10-REPLAY.md` §1), never the reverse; and both sit above
+    # `research`, whose PointInTimeAccessor the strategy context reuses rather than
+    # reimplementing availability filtering.
+    "oipulse.backtest",
+    "oipulse.replay",
     "oipulse.alerts : oipulse.research",
     "oipulse.signals",
     "oipulse.analytics",
@@ -130,6 +136,8 @@ forbidden_modules = [
     "oipulse.marketstate",
     "oipulse.observability",
     "oipulse.persistence",
+    "oipulse.backtest",
+    "oipulse.replay",
     "oipulse.research",
     "oipulse.run",
     "oipulse.signals",

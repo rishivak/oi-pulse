@@ -25,9 +25,11 @@ from __future__ import annotations
 from fastapi import FastAPI
 
 from oipulse.api.alerts import router as alerts_router
+from oipulse.api.backtest import router as backtest_router
 from oipulse.api.features import router as features_router
 from oipulse.api.health import registry, router
 from oipulse.api.market_state import router as market_router
+from oipulse.api.replay import router as replay_router
 from oipulse.api.research import router as research_router
 from oipulse.api.signals import router as signals_router
 from oipulse.core.config import Settings
@@ -72,6 +74,13 @@ def create_app(settings: Settings) -> FastAPI:
     # does, because silently answering with latest knowledge would turn a
     # point-in-time question into a hindsight answer with no indication.
     app.include_router(research_router)
+    # Phase 7. Replay reconstructs history through the same builder live uses, and
+    # backtesting is that replay with a strategy attached. Neither router exposes an
+    # order verb: replay's control surface is play/pause/step/seek/speed, and the
+    # backtest surface reports simulated results. Live trading remains unimplemented
+    # and, when it arrives, is gated separately (`12` §199).
+    app.include_router(replay_router)
+    app.include_router(backtest_router)
 
     # Readiness covers this process's own dependencies: PostgreSQL (durable truth),
     # Redis (coordination) and the packages the role needs locally. Phase 1 registered

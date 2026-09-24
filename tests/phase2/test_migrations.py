@@ -95,6 +95,16 @@ PHASE6_TABLES = (
     "research_signal_evaluations",
 )
 
+#: Phase 7 replay/backtest tables (`0007_phase7_replay_backtest`). Also deliberately
+#: UNPARTITIONED, for the same reason as Phase 6: these are immutable decision
+#: artifacts, and a time partition would imply a pruning story that must not exist.
+PHASE7_TABLES = (
+    "replay_runs",
+    "backtest_results",
+    "backtest_trades",
+    "replay_events",
+)
+
 
 def _tables(path: Path, function: str, call: str) -> list[str]:
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=path.name)
@@ -137,14 +147,15 @@ class TestMigrationChain(unittest.TestCase):
                 "0004_phase4_analytics",
                 "0005_phase5_signals",
                 "0006_phase6_research",
+                "0007_phase7_replay_backtest",
             ],
-            "the chain must run legacy -> Phase 1 -> 2 -> 3 -> 4 -> 5 -> 6, no branch",
+            "the chain must run legacy -> Phase 1 -> 2 -> 3 -> 4 -> 5 -> 6 -> 7, no branch",
         )
 
     def test_exactly_one_head(self) -> None:
         downs = {rev.down_revision for rev in self.chain}
         heads = [rev.revision for rev in self.chain if rev.revision not in downs]
-        self.assertEqual(heads, ["0006_phase6_research"])
+        self.assertEqual(heads, ["0007_phase7_replay_backtest"])
 
     def test_upgrading_from_the_legacy_revision_reaches_phase_2(self) -> None:
         """A database stamped at `002` must have a path to head without manual edits."""
@@ -163,6 +174,7 @@ class TestMigrationChain(unittest.TestCase):
                 "0004_phase4_analytics",
                 "0005_phase5_signals",
                 "0006_phase6_research",
+                "0007_phase7_replay_backtest",
             ],
         )
 
@@ -329,6 +341,67 @@ class TestTableInventory(unittest.TestCase):
                     self.assertNotIn(banned, table.lower())
         self.assertTrue(all(t.startswith("research_") for t in created))
 
+    def test_phase_7_creates_exactly_the_replay_and_backtest_tables(self) -> None:
+        created = _tables(V2 / "0007_phase7_replay_backtest.py", "upgrade", "create_table")
+        self.assertEqual(sorted(created), sorted(PHASE7_TABLES))
+        self.assertEqual(len(created), len(set(created)), "no table created twice")
+
+    def test_phase_7_result_identity_and_trade_constraints(self) -> None:
+        """The three constraints that carry the architecture, in the migration source."""
+        source = (V2 / "0007_phase7_replay_backtest.py").read_text(encoding="utf-8")
+        # Re-running an identical backtest must yield the same artifact, not a new row.
+        self.assertIn("uq_backtest_results_content_hash", source)
+        # A fill cannot exceed what was requested, and an unfilled trade cannot carry
+        # a fill time -- states the runner never produces, kept impossible.
+        self.assertIn("ck_backtest_trades_fill_within_request", source)
+        self.assertIn("ck_backtest_trades_unfilled_has_no_fill_time", source)
+        # The assumption set travels with every result (`10` §6).
+        for column in ("assumptions", "assumption_based", "risk_evaluated", "fill_model_digest"):
+            with self.subTest(column=column):
+                self.assertIn(f'"{column}"', source)
+
+    def test_replay_events_are_namespaced_by_run_and_cannot_be_null(self) -> None:
+        """`10` §8: a replay-derived event must never reach the live outbox.
+
+        `run_id NOT NULL` plus a separate table is the structural form of that rule:
+        a flag on the live outbox could be forgotten in a WHERE clause, and the
+        consequence of forgetting would be a replay firing a real alert.
+        """
+        source = (V2 / "0007_phase7_replay_backtest.py").read_text(encoding="utf-8")
+        self.assertIn('sa.Column("run_id", sa.Text, nullable=False)', source)
+        self.assertIn("uq_replay_events_sequence", source)
+        created = _tables(V2 / "0007_phase7_replay_backtest.py", "upgrade", "create_table")
+        self.assertIn("replay_events", created)
+        self.assertNotIn("sys_outbox", created, "replay must not extend the live outbox")
+
+    def test_phase_7_introduces_no_phase_8_or_later_table(self) -> None:
+        """Paper trading, orders, positions, portfolio and the terminal are later phases.
+
+        Checks the tables actually created rather than the word anywhere in the file:
+        the migration docstring states that no such table is created, and a substring
+        search would flag that disclaimer. Same distinction as the Phase 6 check --
+        a statement that something is absent is not an instance of it.
+        """
+        created = _tables(V2 / "0007_phase7_replay_backtest.py", "upgrade", "create_table")
+        for table in created:
+            for banned in ("paper", "portfolio", "position", "reconcil", "terminal"):
+                with self.subTest(table=table, banned=banned):
+                    self.assertNotIn(banned, table.lower())
+        # `backtest_trades` is simulated fills inside a run, scoped by run_id -- not
+        # an order book. Assert the scoping rather than trusting the name.
+        source = (V2 / "0007_phase7_replay_backtest.py").read_text(encoding="utf-8")
+        self.assertIn("uq_backtest_trades_fill", source)
+        self.assertTrue(
+            all(t.startswith(("replay_", "backtest_")) for t in created),
+            f"unexpected table namespace in {created}",
+        )
+
+    def test_phase_7_partitions_nothing(self) -> None:
+        """Decision artifacts are retained, not pruned (`02` §9)."""
+        source = (V2 / "0007_phase7_replay_backtest.py").read_text(encoding="utf-8")
+        self.assertNotIn("postgresql_partition_by", source)
+        self.assertNotIn("PARTITION OF", source)
+
     def test_downgrade_mirrors_upgrade_in_all_revisions(self) -> None:
         """A downgrade that forgets a table leaves a schema the next upgrade cannot build."""
         for name in (
@@ -338,6 +411,7 @@ class TestTableInventory(unittest.TestCase):
             "0004_phase4_analytics.py",
             "0005_phase5_signals.py",
             "0006_phase6_research.py",
+            "0007_phase7_replay_backtest.py",
         ):
             with self.subTest(revision=name):
                 created = _tables(V2 / name, "upgrade", "create_table")
@@ -362,6 +436,7 @@ class TestTableInventory(unittest.TestCase):
             "0004_phase4_analytics.py",
             "0005_phase5_signals.py",
             "0006_phase6_research.py",
+            "0007_phase7_replay_backtest.py",
         ):
             source = (V2 / name).read_text(encoding="utf-8")
             for table in legacy:

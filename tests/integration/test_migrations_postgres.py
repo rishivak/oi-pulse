@@ -160,6 +160,7 @@ class TestMigrationsApply(unittest.TestCase):
             PHASE4_TABLES,
             PHASE5_TABLES,
             PHASE6_TABLES,
+            PHASE7_TABLES,
         )
 
         self._upgrade_head()
@@ -171,6 +172,7 @@ class TestMigrationsApply(unittest.TestCase):
             *PHASE4_TABLES,
             *PHASE5_TABLES,
             *PHASE6_TABLES,
+            *PHASE7_TABLES,
         ):
             with self.subTest(table=table):
                 self.assertIn(table, present)
@@ -250,6 +252,7 @@ class TestMigrationsApply(unittest.TestCase):
             PHASE4_TABLES,
             PHASE5_TABLES,
             PHASE6_TABLES,
+            PHASE7_TABLES,
         )
 
         self._upgrade_head()
@@ -265,6 +268,7 @@ class TestMigrationsApply(unittest.TestCase):
             *PHASE4_TABLES,
             *PHASE5_TABLES,
             *PHASE6_TABLES,
+            *PHASE7_TABLES,
         ):
             with self.subTest(table=table):
                 self.assertNotIn(table, remaining, f"{table} survived the downgrade")
@@ -344,6 +348,43 @@ class TestMigrationsApply(unittest.TestCase):
             )
         )
         self.assertIn("SUPPORTING", evidence_defs)
+
+    def test_the_phase_7_constraints_are_enforced_by_postgres(self) -> None:
+        """Backtest identity and trade sanity, asserted against the live catalogue.
+
+        A constraint present in a `.py` file and absent from the database enforces
+        nothing: without the unique content hash, re-running an identical backtest
+        would accumulate duplicate artifacts, and without the trade checks a fill
+        could exceed the quantity requested or an unfilled trade could carry a fill
+        time.
+        """
+        self._upgrade_head()
+        result_defs = " ".join(
+            definition
+            for _, definition in self._rows(
+                "SELECT conname, pg_get_constraintdef(oid) FROM pg_constraint "
+                "WHERE conrelid = 'backtest_results'::regclass"
+            )
+        )
+        self.assertIn("content_hash", result_defs)
+
+        trade_defs = " ".join(
+            definition
+            for _, definition in self._rows(
+                "SELECT conname, pg_get_constraintdef(oid) FROM pg_constraint "
+                "WHERE conrelid = 'backtest_trades'::regclass"
+            )
+        )
+        self.assertIn("filled_quantity", trade_defs)
+        self.assertIn("filled_at", trade_defs)
+
+        # `10` §8: replay events are namespaced by run. A nullable run_id would let a
+        # replay-derived row look like a live one.
+        nullable = self._rows(
+            "SELECT is_nullable FROM information_schema.columns "
+            "WHERE table_name = 'replay_events' AND column_name = 'run_id'"
+        )
+        self.assertEqual([r[0] for r in nullable], ["NO"])
 
 
 if __name__ == "__main__":
