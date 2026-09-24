@@ -110,6 +110,37 @@ CONTRACTS: tuple[Contract, ...] = (
         ),
     ),
     Contract(
+        name="research-is-pure",
+        subject="research",
+        allowed_only=frozenset({"signals", "analytics", "marketstate", "core"}),
+        forbidden_modules=frozenset({f"{ROOT_PACKAGE}.core.clock"}),
+        forbidden_external=_DB_AND_IO,
+        rationale=(
+            "A research result that cannot be reproduced live is worse than no result "
+            "(09-RESEARCH.md). The engine reads supplied datasets and an injected "
+            "clock-free instant, so a study runs identically in research, replay and "
+            "backtest. It also must not import `alerts`: delivery has no bearing on "
+            "what history shows."
+        ),
+    ),
+    Contract(
+        name="research-never-recomputes-analytics",
+        subject="research",
+        forbidden_modules=frozenset(
+            {
+                f"{ROOT_PACKAGE}.analytics.domains",
+                f"{ROOT_PACKAGE}.analytics.engine",
+                f"{ROOT_PACKAGE}.signals.evaluation",
+            }
+        ),
+        rationale=(
+            "Research consumes verified feature and signal *results*, pinned to exact "
+            "versions. Importing the feature domains or either engine would create a "
+            "second analytics implementation, and the two would drift silently -- the "
+            "exact divergence the single-implementation rule exists to prevent."
+        ),
+    ),
+    Contract(
         name="nothing-imports-api",
         subject="*",
         forbidden=frozenset({"api"}),

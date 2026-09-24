@@ -106,6 +106,9 @@ exhaustive = false
 layers = [
     "oipulse.run",
     "oipulse.api",
+    "oipulse.alerts : oipulse.research",
+    "oipulse.signals",
+    "oipulse.analytics",
     "oipulse.marketstate",
     "oipulse.marketdata",
     "oipulse.dataquality : oipulse.events : oipulse.instruments : oipulse.observability : oipulse.persistence",
@@ -117,6 +120,8 @@ name = "core depends on nothing internal"
 type = "forbidden"
 source_modules = ["oipulse.core"]
 forbidden_modules = [
+    "oipulse.alerts",
+    "oipulse.analytics",
     "oipulse.api",
     "oipulse.dataquality",
     "oipulse.events",
@@ -125,7 +130,9 @@ forbidden_modules = [
     "oipulse.marketstate",
     "oipulse.observability",
     "oipulse.persistence",
+    "oipulse.research",
     "oipulse.run",
+    "oipulse.signals",
 ]
 
 # NOTE: there is deliberately no import-linter contract for `oipulse.analytics`.

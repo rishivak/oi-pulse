@@ -23,6 +23,10 @@ __all__ = [
     "record_alert_triggered",
     "record_feature_computed",
     "record_feature_skipped",
+    "record_provenance_failure",
+    "record_research_artifact",
+    "record_research_failure",
+    "record_research_run",
     "record_signal_created",
     "record_signal_evaluation",
     "record_signal_idempotent_repeat",
@@ -174,7 +178,72 @@ ALERTS_DELIVERED = "alerts_delivered_total"
 ALERTS_FAILED = "alerts_failed_total"
 ALERT_DELIVERY_DURATION = "alert_delivery_duration_seconds"
 
+# --- Phase 6 research (`16-OBSERVABILITY.md` conventions).
+RESEARCH_RUNS = "research_runs_total"
+RESEARCH_RUN_DURATION = "research_run_duration_seconds"
+RESEARCH_FAILURES = "research_failures_total"
+#: Raw detections, before any sampling policy is applied.
+RESEARCH_EVENTS_DETECTED = "research_events_detected_total"
+#: Events removed by clustering, separation or quality. Labelled by reason, so
+#: "the study found nothing" and "the study excluded everything" stay distinguishable.
+RESEARCH_EVENTS_EXCLUDED = "research_events_excluded_total"
+#: Forward windows running past the end of the dataset. Never fabricated, so a rising
+#: count means studies are being run too close to the present.
+RESEARCH_INCOMPLETE_WINDOWS = "research_incomplete_windows_total"
+RESEARCH_ARTIFACTS_CREATED = "research_artifacts_created_total"
+RESEARCH_CONTENT_HASHES = "research_content_hashes_total"
+#: A reference that failed to resolve. Should always be zero; non-zero means the
+#: audit chain is broken and results are no longer explainable.
+RESEARCH_PROVENANCE_FAILURES = "research_provenance_failures_total"
+
 METRICS = MetricsRegistry()
+
+
+def record_research_run(
+    study_id: str,
+    version: int,
+    *,
+    status: str,
+    duration_seconds: float,
+    raw_events: int,
+    effective_sample: int,
+    excluded_quality: int,
+    incomplete_windows: int,
+) -> None:
+    """One study execution. Primitives only: `research/` may not import this module.
+
+    Both event counts are recorded, never just one: reporting raw detections alone
+    would restate the significance inflation that clustering exists to correct.
+    """
+    labels = {"study": study_id, "version": str(version)}
+    METRICS.inc(RESEARCH_RUNS, {**labels, "status": status})
+    METRICS.observe(RESEARCH_RUN_DURATION, duration_seconds, labels)
+    METRICS.inc(RESEARCH_EVENTS_DETECTED, labels, raw_events)
+    METRICS.inc(
+        RESEARCH_EVENTS_EXCLUDED,
+        {**labels, "reason": "clustering"},
+        max(raw_events - effective_sample, 0),
+    )
+    if excluded_quality:
+        METRICS.inc(RESEARCH_EVENTS_EXCLUDED, {**labels, "reason": "quality"}, excluded_quality)
+    if incomplete_windows:
+        METRICS.inc(RESEARCH_INCOMPLETE_WINDOWS, labels, incomplete_windows)
+
+
+def record_research_failure(study_id: str, reason: str) -> None:
+    METRICS.inc(RESEARCH_FAILURES, {"study": study_id, "reason": reason})
+
+
+def record_research_artifact(kind: str, *, content_hash_computed: bool = True) -> None:
+    """A dataset or result artifact was materialised."""
+    METRICS.inc(RESEARCH_ARTIFACTS_CREATED, {"kind": kind})
+    if content_hash_computed:
+        METRICS.inc(RESEARCH_CONTENT_HASHES, {"kind": kind})
+
+
+def record_provenance_failure(kind: str, reference: str) -> None:
+    """A reference that would not resolve. Should never fire in a healthy system."""
+    METRICS.inc(RESEARCH_PROVENANCE_FAILURES, {"kind": kind, "reference": reference[:64]})
 
 
 def record_signal_created(

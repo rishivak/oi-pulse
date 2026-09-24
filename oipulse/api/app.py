@@ -28,6 +28,7 @@ from oipulse.api.alerts import router as alerts_router
 from oipulse.api.features import router as features_router
 from oipulse.api.health import registry, router
 from oipulse.api.market_state import router as market_router
+from oipulse.api.research import router as research_router
 from oipulse.api.signals import router as signals_router
 from oipulse.core.config import Settings
 from oipulse.observability.logging import get_logger
@@ -67,6 +68,10 @@ def create_app(settings: Settings) -> FastAPI:
     # endpoint mutates signal truth.
     app.include_router(signals_router)
     app.include_router(alerts_router)
+    # Phase 6. Research reads history; `knowledge_time` is required on any query that
+    # does, because silently answering with latest knowledge would turn a
+    # point-in-time question into a hindsight answer with no indication.
+    app.include_router(research_router)
 
     # Readiness covers this process's own dependencies: PostgreSQL (durable truth),
     # Redis (coordination) and the packages the role needs locally. Phase 1 registered
