@@ -133,19 +133,38 @@ class TestAuditChain(unittest.TestCase):
             )
         self.assertIn("refusing to assemble a chain", str(caught.exception))
 
-    def test_the_chain_reports_that_no_risk_engine_evaluated_it(self) -> None:
+    def test_the_chain_reports_whether_a_risk_engine_evaluated_it(self) -> None:
+        """Phase 8 could only report False. Phase 9 makes both answers reachable,
+        and the chain must report each accurately rather than assuming either."""
         chain, _ = _filled_chain()
-        self.assertFalse(chain.risk_evaluated)
-        self.assertFalse(chain.answers()["risk_evaluated"])
+        self.assertTrue(chain.risk_evaluated)
+        self.assertTrue(chain.answers()["risk_evaluated"])
 
-    def test_the_risk_decision_sequence_is_present_even_when_unevaluated(self) -> None:
-        """`11` §3: decisions append from the first intent, so Phase 9 slots in."""
+        unevaluated = fx.runtime(unevaluated_risk=True)
+        result = fx.submit(unevaluated, fx.observations(), fx.intent())
+        self.assertFalse(result.risk_decision.evaluated)
+
+    def test_the_risk_decision_sequence_is_recorded(self) -> None:
+        """`11` §3: decisions append from the first intent.
+
+        Phase 8 asserted the sequence existed while carrying an unevaluated
+        placeholder. Phase 9 fills it, so the assertion now checks the sequence is
+        present *and* that a real evaluation populated the four mandatory
+        traceability fields — the stronger form of the same property.
+        """
         chain, _ = _filled_chain()
         decisions = chain.answers()["what_authorised_it"]
         self.assertEqual(len(decisions), 1)
         self.assertEqual(decisions[0]["sequence_no"], 1)
-        self.assertFalse(decisions[0]["evaluated"])
-        self.assertIn("no risk engine", decisions[0]["reason"])
+        self.assertTrue(decisions[0]["evaluated"])
+        for field in (
+            "risk_state_ref",
+            "risk_evaluation_time",
+            "inputs_digest",
+            "approved_until",
+        ):
+            with self.subTest(field=field):
+                self.assertTrue(decisions[0][field], f"{field} must be populated")
 
 
 class TestSerialisationEnvelopes(unittest.TestCase):
@@ -174,11 +193,21 @@ class TestSerialisationEnvelopes(unittest.TestCase):
                 self.assertEqual(envelope["meta"]["mode"], "PAPER")
                 self.assertFalse(envelope["meta"]["live_execution_available"])
 
-    def test_the_account_envelope_carries_the_unrisked_caveat(self) -> None:
-        rt = fx.runtime()
-        envelope = account_to_dict(rt.account, risk_evaluated=rt.risk_evaluated)
+    def test_the_account_envelope_reports_whether_risk_evaluated(self) -> None:
+        """Both directions, since Phase 9 makes both reachable.
+
+        An account with no policy must still carry the caveat; one with a real
+        engine must not, or the caveat becomes noise that readers learn to skip.
+        """
+        unevaluated = fx.runtime(unevaluated_risk=True)
+        envelope = account_to_dict(unevaluated.account, risk_evaluated=unevaluated.risk_evaluated)
         self.assertFalse(envelope["meta"]["risk_evaluated"])
         self.assertTrue(any("no risk engine" in c for c in envelope["meta"]["caveats"]))
+
+        evaluated = fx.runtime()
+        envelope = account_to_dict(evaluated.account, risk_evaluated=evaluated.risk_evaluated)
+        self.assertTrue(envelope["meta"]["risk_evaluated"])
+        self.assertEqual(envelope["meta"]["caveats"], [])
 
     def test_the_intent_envelope_carries_the_full_decision_sequence(self) -> None:
         rows = fx.observations()
@@ -190,8 +219,13 @@ class TestSerialisationEnvelopes(unittest.TestCase):
         self.assertEqual(len(envelope["meta"]["risk_decisions"]), 1)
 
     def test_the_orders_envelope_counts_rejections(self) -> None:
-        """A list that hid rejections would make a failing strategy look healthy."""
-        rt = fx.runtime(acct=fx.account(cfg=fx.config(starting_cash=Decimal(100))))
+        """A list that hid rejections would make a failing strategy look healthy.
+
+        Driven through the *execution* layer: since Phase 9 a cash shortfall is
+        refused at the gate and produces no order at all, so an order-level
+        rejection now needs a cause the gate approves and the venue refuses.
+        """
+        rt = fx.runtime(model=fx.fill_model(rejection_rate=Decimal(1)))
         fx.submit(rt, fx.observations(), fx.intent())
         envelope = orders_to_dict(rt.orders())
         self.assertEqual(envelope["meta"]["rejected"], 1)
@@ -454,13 +488,18 @@ class TestArchitectureGuards(unittest.TestCase):
     def test_the_risk_seam_does_not_import_what_it_constrains(self) -> None:
         """`11` §3: the component that says 'no' must not depend on the components
         it constrains."""
-        source = (REPO / "oipulse/trading/risk.py").read_text(encoding="utf-8")
-        tree = ast.parse(source)
-        imported = {
-            node.module
-            for node in ast.walk(tree)
-            if isinstance(node, ast.ImportFrom) and node.module
-        }
+        # `trading/risk` became a package in Phase 9 (the roadmap names the module
+        # `trading/risk`, and the engine needs more than one file). The check now
+        # scans every module in it, which is strictly stronger than reading one
+        # file: a violation hiding in a submodule would previously have gone unseen.
+        imported: set[str] = set()
+        for path in sorted((REPO / "oipulse/trading/risk").rglob("*.py")):
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            for node in ast.walk(tree):
+                if isinstance(node, ast.ImportFrom) and node.module:
+                    imported.add(node.module)
+                elif isinstance(node, ast.Import):
+                    imported.update(a.name for a in node.names)
         for forbidden in (
             "oipulse.trading.orders",
             "oipulse.trading.brokers",
@@ -471,14 +510,22 @@ class TestArchitectureGuards(unittest.TestCase):
             with self.subTest(module=forbidden):
                 self.assertNotIn(forbidden, imported)
 
-    def test_there_is_no_phase_9_risk_engine(self) -> None:
-        """The seam only. A stand-in would approve what the real engine refuses."""
+    def test_the_seam_and_the_engine_remain_distinguishable(self) -> None:
+        """Phase 8 asserted no `RiskEngine` existed. Phase 9 built one.
+
+        The assertion is replaced, not deleted, by the property it was actually
+        protecting: a pass-through must never be mistakable for a real engine. The
+        two now coexist, and `evaluates_risk` is what tells them apart —
+        `UNEVALUATED_RISK` still reports False, and after Phase 9 its approvals are
+        additionally non-actionable, so it cannot authorize anything.
+        """
         import oipulse.trading.risk as risk
 
         self.assertTrue(hasattr(risk, "RiskGate"))
         self.assertTrue(hasattr(risk, "UNEVALUATED_RISK"))
-        self.assertFalse(hasattr(risk, "RiskEngine"))
+        self.assertTrue(hasattr(risk, "RiskEngine"))
         self.assertFalse(risk.UNEVALUATED_RISK.evaluates_risk)
+        self.assertTrue(fx.permissive_engine().evaluates_risk)
 
 
 class TestObservability(unittest.TestCase):
@@ -565,7 +612,10 @@ class TestPaperTradingApiRuntime(unittest.TestCase):
                 rt = self.get(account_id)
                 if rt is None:
                     raise KeyError(f"no account {account_id}")
-                return rt.cancel(order_id, at(2), reason=body.get("reason", "API cancel"))
+                # `cancel` takes `at` keyword-only and has no `reason` parameter.
+                # The previous call would have raised TypeError; it was never
+                # reached because no test exercises the cancel endpoint yet.
+                return rt.cancel(order_id, at=at(2), detail=body.get("reason", "API cancel"))
 
             def snapshot(self, account_id: str) -> Any:
                 rt = self.get(account_id)

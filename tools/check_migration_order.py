@@ -63,7 +63,59 @@ def _string_args(node: ast.Call) -> list[str]:
     return [a.value for a in node.args if isinstance(a, ast.Constant) and isinstance(a.value, str)]
 
 
-def check_migration(path: Path) -> list[str]:
+def _revision_ids(path: Path) -> tuple[str | None, str | None]:
+    """`(revision, down_revision)` declared at module level."""
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    found: dict[str, str | None] = {}
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and len(node.targets) == 1:
+            target = node.targets[0]
+            if isinstance(target, ast.Name) and target.id in {"revision", "down_revision"}:
+                value = node.value
+                found[target.id] = value.value if isinstance(value, ast.Constant) else None
+    return found.get("revision"), found.get("down_revision")
+
+
+def chain_order(paths: list[Path]) -> list[Path]:
+    """Revisions in chain order, following `down_revision`.
+
+    Filename order is not chain order: `0001_...` sorts before `001_...` because
+    `'1' < '_'`, which would put the Phase 1 revision ahead of the legacy base it
+    depends on. Accumulating "already created" tables across revisions only makes
+    sense along the real chain, so the chain is what this follows.
+    """
+    by_down: dict[str | None, Path] = {}
+    for path in paths:
+        _, down = _revision_ids(path)
+        by_down[down] = path
+
+    ordered: list[Path] = []
+    cursor: str | None = None
+    seen: set[str] = set()
+    while cursor in by_down:
+        path = by_down[cursor]
+        ordered.append(path)
+        revision, _ = _revision_ids(path)
+        if revision is None or revision in seen:
+            break
+        seen.add(revision)
+        cursor = revision
+    # Anything not reachable along the chain is still checked, just last -- a
+    # detached revision is check_migration_chain's problem to report, not ours,
+    # and silently skipping it here would hide its ordering bugs too.
+    ordered.extend(p for p in paths if p not in ordered)
+    return ordered
+
+
+def check_migration(path: Path, *, existing: frozenset[str] = frozenset()) -> list[str]:
+    """Check one revision.
+
+    `existing` is the set of tables created by earlier revisions in the chain. A
+    revision may legitimately alter a table an earlier one created -- Phase 9 adds
+    a column and a foreign key to the Phase 8 `trade_orders` -- and flagging that
+    would force every cross-revision change to be avoided. Within a revision the
+    original rule is unchanged: a table must be created before it is used.
+    """
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
     tuples = _module_tuples(tree)
     upgrade = next(
@@ -74,7 +126,10 @@ def check_migration(path: Path) -> list[str]:
         return [f"{path.name}: no upgrade() function"]
 
     problems: list[str] = []
-    created: set[str] = set()
+    #: Seeded with what earlier revisions built, so an ALTER of an existing table
+    #: is permitted while a use-before-create inside this revision is still caught.
+    created: set[str] = set(existing)
+    created_here: set[str] = set()
     partitioned: set[str] = set()
     indexed: set[str] = set()
     name = path.name
@@ -124,9 +179,10 @@ def check_migration(path: Path) -> list[str]:
                     for table in _string_args(node)[:1] or resolve(
                         node.args[0] if node.args else ast.Constant(None), loop_vars
                     ):
-                        if table in created:
+                        if table in created_here:
                             problems.append(f"{name}:{node.lineno}: {table} created twice")
                         created.add(table)
+                        created_here.add(table)
                     continue
 
                 if fname not in _REQUIRES_EXISTING_TABLE:
@@ -183,8 +239,20 @@ def main() -> int:
 
     problems: list[str] = []
     checked = 0
-    for path in sorted(versions.glob("0*.py")):
-        problems.extend(check_migration(path))
+    built: set[str] = set()
+    for path in chain_order(sorted(versions.glob("0*.py"))):
+        problems.extend(check_migration(path, existing=frozenset(built)))
+        # Accumulate for the next revision in the chain.
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "create_table"
+                and node.args
+                and isinstance(node.args[0], ast.Constant)
+            ):
+                built.add(str(node.args[0].value))
         checked += 1
 
     if problems:

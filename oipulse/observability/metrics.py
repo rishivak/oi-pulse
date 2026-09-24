@@ -39,6 +39,11 @@ __all__ = [
     "record_research_artifact",
     "record_research_failure",
     "record_research_run",
+    "record_risk_contention",
+    "record_risk_duplicate",
+    "record_risk_evaluation",
+    "record_risk_expired_approval",
+    "record_risk_failure",
     "record_signal_created",
     "record_signal_evaluation",
     "record_signal_idempotent_repeat",
@@ -560,3 +565,102 @@ def record_paper_ledger_failure(account_id: str, reason: str) -> None:
 def record_live_execution_refusal(requested_mode: str) -> None:
     """Something asked for live execution and was refused. Must always be zero."""
     METRICS.inc(PAPER_LIVE_EXECUTION_REFUSALS, {"requested_mode": requested_mode})
+
+
+# --- Phase 9 risk (`16-OBSERVABILITY.md` conventions, `11-TRADING.md` §3).
+#
+# Every name is prefixed `risk_`. Brief §27: metrics must represent actual
+# execution paths -- so there is no metric here for a broker, an order or a fill,
+# because the risk layer touches none of them.
+RISK_EVALUATIONS = "risk_evaluations_total"
+RISK_APPROVALS = "risk_approvals_total"
+RISK_REJECTIONS = "risk_rejections_total"
+#: Approvals that had lapsed by the time execution was attempted. `11` §3 requires
+#: refusal rather than silent re-approval, so a rising count means intents are
+#: sitting too long between evaluation and submission.
+RISK_EXPIRED_APPROVALS = "risk_expired_approvals_total"
+#: Intents approved for less than they asked. Only non-zero when resizing is on.
+RISK_RESIZED_INTENTS = "risk_resized_intents_total"
+RISK_EVALUATION_DURATION = "risk_evaluation_duration_seconds"
+#: Labelled by limit id, so an operator sees *which* limit is binding rather than
+#: only that something is.
+RISK_LIMIT_BREACHES = "risk_limit_breaches_total"
+#: Configured limits that could not be checked. Each one is a fail-closed refusal
+#: and a data problem; a sustained count means risk is blind, not that it is safe.
+RISK_LIMITS_NOT_EVALUABLE = "risk_limits_not_evaluable_total"
+#: Evaluations that could not run at all. Distinct from a rejection: a rejection is
+#: a decision, this is the absence of one.
+RISK_EVALUATION_FAILURES = "risk_evaluation_failures_total"
+#: Refusals because the state carried knowledge from after the evaluation horizon.
+#: Should always be zero; non-zero means something assembled state incorrectly.
+RISK_HORIZON_VIOLATIONS = "risk_horizon_violations_total"
+#: Intents refused because the kill switch was engaged.
+RISK_KILL_SWITCH_BLOCKS = "risk_kill_switch_blocks_total"
+#: Redelivered evaluations absorbed rather than re-applied.
+RISK_DUPLICATE_EVALUATIONS = "risk_duplicate_evaluations_total"
+#: Concurrent evaluations that had to retry because the state moved underneath them.
+RISK_CONTENTION_RETRIES = "risk_contention_retries_total"
+#: Accounts evaluating with no configured policy. Every such account is unable to
+#: trade, so this is a configuration gap rather than an exposure.
+RISK_UNPOLICED_ACCOUNTS = "risk_unpoliced_accounts_total"
+
+
+def record_risk_evaluation(
+    account_id: str,
+    *,
+    policy_label: str,
+    verdict: str,
+    evaluated: bool,
+    duration_seconds: float,
+    requested_quantity: int,
+    approved_quantity: int,
+    breached_limits: tuple[str, ...] = (),
+    unevaluable_limits: tuple[str, ...] = (),
+) -> None:
+    """One risk evaluation, with the limits that actually bound it.
+
+    Breaches are labelled by `limit_id` rather than counted in aggregate: an
+    operator needs to know *which* limit is binding, and a single number cannot
+    distinguish an account pressing against its position cap from one whose market
+    data has gone stale.
+    """
+    labels = {"account": account_id, "policy": policy_label}
+    METRICS.inc(RISK_EVALUATIONS, {**labels, "verdict": verdict})
+    METRICS.observe(RISK_EVALUATION_DURATION, duration_seconds, labels)
+
+    if verdict == "REJECTED":
+        METRICS.inc(RISK_REJECTIONS, labels)
+    else:
+        METRICS.inc(RISK_APPROVALS, {**labels, "verdict": verdict})
+    if verdict == "MODIFIED" and approved_quantity < requested_quantity:
+        METRICS.inc(RISK_RESIZED_INTENTS, labels)
+    if not evaluated:
+        METRICS.inc(RISK_UNPOLICED_ACCOUNTS, {"account": account_id})
+
+    for limit_id in breached_limits:
+        METRICS.inc(RISK_LIMIT_BREACHES, {**labels, "limit": limit_id})
+        if limit_id == "kill_switch":
+            METRICS.inc(RISK_KILL_SWITCH_BLOCKS, labels)
+        elif limit_id == "knowledge_horizon":
+            METRICS.inc(RISK_HORIZON_VIOLATIONS, labels)
+    for limit_id in unevaluable_limits:
+        METRICS.inc(RISK_LIMITS_NOT_EVALUABLE, {**labels, "limit": limit_id})
+
+
+def record_risk_expired_approval(account_id: str, intent_id: str) -> None:
+    """An approval that had lapsed before execution was attempted."""
+    METRICS.inc(RISK_EXPIRED_APPROVALS, {"account": account_id, "intent": intent_id[:64]})
+
+
+def record_risk_failure(account_id: str, reason: str) -> None:
+    """An evaluation that could not run. Never counted as a rejection."""
+    METRICS.inc(RISK_EVALUATION_FAILURES, {"account": account_id, "reason": reason})
+
+
+def record_risk_duplicate(account_id: str, kind: str) -> None:
+    METRICS.inc(RISK_DUPLICATE_EVALUATIONS, {"account": account_id, "kind": kind})
+
+
+def record_risk_contention(account_id: str, resource: str) -> None:
+    """Two intents competing for the same headroom; one had to re-evaluate."""
+    METRICS.inc(RISK_CONTENTION_RETRIES, {"account": account_id, "resource": resource})

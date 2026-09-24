@@ -11,7 +11,7 @@ verified Phase 3 path rather than by a test-only construction.
 
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import time, timedelta
 from decimal import Decimal
 
 from oipulse.backtest.costs import INDIAN_OPTIONS_COSTS, CostModel
@@ -35,7 +35,13 @@ from oipulse.trading.intents import (
     TimeInForce,
     TradeIntent,
 )
-from oipulse.trading.risk import RiskGate
+from oipulse.trading.risk import (
+    RiskEngine,
+    RiskGate,
+    RiskLimits,
+    RiskPolicy,
+    SessionWindow,
+)
 from oipulse.trading.runtime import PaperTradingRuntime
 from tests.phase3._fixtures import (
     UNDERLYING,
@@ -165,14 +171,62 @@ def account(
     return active if status is AccountStatus.ACTIVE else active.with_status(status, at=at(0))
 
 
+#: A real, explicitly-configured policy that permits what these tests trade.
+#:
+#: Phase 9 made an *unevaluated* approval non-actionable: an account with no risk
+#: policy can no longer place an order, which is the fail-closed barrier the phase
+#: exists to build. These Phase 8 tests are about execution, fills and the ledger,
+#: not about risk, so they attach a real engine whose limits are wide enough not to
+#: interfere -- wide, but genuinely evaluated, never bypassed.
+#:
+#: Only the limits these tests actually exercise are relaxed. The data, session and
+#: kill-switch checks stay on, so a Phase 8 test cannot accidentally pass because
+#: risk was switched off.
+PERMISSIVE_LIMITS = RiskLimits(
+    max_order_quantity=1_000_000,
+    max_position_per_instrument=1_000_000,
+    max_deployed_capital=Decimal("1e12"),
+    max_leverage=Decimal("1e9"),
+    max_daily_loss=Decimal("1e12"),
+    reject_unreliable_state=True,
+    require_healthy_venue=True,
+    session=SessionWindow(opens_at=time(0, 0), closes_at=time(23, 59, 59)),
+)
+
+
+def permissive_policy(*, limits: RiskLimits | None = None) -> RiskPolicy:
+    return RiskPolicy(
+        policy_id="PHASE8_TEST",
+        version=1,
+        limits=limits or PERMISSIVE_LIMITS,
+        description="Wide limits so Phase 8 execution tests are not gated by risk.",
+    )
+
+
+def permissive_engine(*, limits: RiskLimits | None = None) -> RiskEngine:
+    return RiskEngine(
+        policy=permissive_policy(limits=limits), approval_validity=timedelta(hours=12)
+    )
+
+
 def runtime(
     *,
     acct: PaperAccount | None = None,
     model: FillModel | None = None,
     risk_gate: RiskGate | None = None,
     reject_on_unreliable_state: bool = True,
+    unevaluated_risk: bool = False,
 ) -> PaperTradingRuntime:
+    """A paper runtime with a real risk engine unless told otherwise.
+
+    `unevaluated_risk=True` returns a runtime with the Phase 8 pass-through gate,
+    which after Phase 9 can no longer authorize an order. Tests that assert that
+    barrier use it deliberately.
+    """
     resolved = acct or account()
+    gate = risk_gate
+    if gate is None and not unevaluated_risk:
+        gate = permissive_engine()
     return PaperTradingRuntime(
         resolved,
         execution=PaperExecutionModel(
@@ -180,7 +234,7 @@ def runtime(
             reject_on_unreliable_state=reject_on_unreliable_state,
         ),
         inbox=InMemoryInbox(),
-        risk_gate=risk_gate,
+        risk_gate=gate,
     )
 
 
@@ -267,6 +321,7 @@ def marks(rows: list[object], minute: int) -> dict[int, Decimal]:
 __all__ = [
     "ACCOUNT_ID",
     "OTHER",
+    "PERMISSIVE_LIMITS",
     "PROVENANCE",
     "TARGET",
     "account",
@@ -276,6 +331,8 @@ __all__ = [
     "intent",
     "marks",
     "observations",
+    "permissive_engine",
+    "permissive_policy",
     "runtime",
     "service",
     "state_at",

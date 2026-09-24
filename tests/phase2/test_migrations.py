@@ -32,7 +32,7 @@ if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
 from tools.check_migration_chain import build_chain, load_version_locations
-from tools.check_migration_order import check_migration
+from tools.check_migration_order import chain_order, check_migration
 
 V2 = REPO / "oipulse/migrations/versions"
 LEGACY = REPO / "backend/alembic/versions"
@@ -117,6 +117,10 @@ PHASE8_TABLES = (
     "journal_entries",
 )
 
+#: Phase 9 risk tables (`0009_phase9_risk`). Also UNPARTITIONED: a risk decision is
+#: an immutable audit record, retained rather than pruned.
+PHASE9_TABLES = ("risk_profiles", "risk_decisions")
+
 
 def _tables(path: Path, function: str, call: str) -> list[str]:
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=path.name)
@@ -161,14 +165,16 @@ class TestMigrationChain(unittest.TestCase):
                 "0006_phase6_research",
                 "0007_phase7_replay_backtest",
                 "0008_phase8_paper_trading",
+                "0009_phase9_risk",
             ],
-            "the chain must run legacy -> Phase 1 -> 2 -> 3 -> 4 -> 5 -> 6 -> 7 -> 8, no branch",
+            "the chain must run legacy -> Phase 1 -> 2 -> 3 -> 4 -> 5 -> 6 -> 7 -> 8 "
+            "-> 9, no branch",
         )
 
     def test_exactly_one_head(self) -> None:
         downs = {rev.down_revision for rev in self.chain}
         heads = [rev.revision for rev in self.chain if rev.revision not in downs]
-        self.assertEqual(heads, ["0008_phase8_paper_trading"])
+        self.assertEqual(heads, ["0009_phase9_risk"])
 
     def test_upgrading_from_the_legacy_revision_reaches_phase_2(self) -> None:
         """A database stamped at `002` must have a path to head without manual edits."""
@@ -189,6 +195,7 @@ class TestMigrationChain(unittest.TestCase):
                 "0006_phase6_research",
                 "0007_phase7_replay_backtest",
                 "0008_phase8_paper_trading",
+                "0009_phase9_risk",
             ],
         )
 
@@ -202,11 +209,45 @@ class TestOperationOrdering(unittest.TestCase):
         `check_migration_order` expands `for table in _PARTITIONED:` against the module
         tuple, which is where the bug hid: the loop was correct in isolation and wrong
         only in relation to the statements around it.
+
+        Walked in **chain order** with the accumulated set of already-created
+        tables, because a revision may legitimately alter a table an earlier one
+        built -- Phase 9 adds a column and a foreign key to the Phase 8
+        `trade_orders`. Checking each file in isolation would forbid every
+        cross-revision change; within a revision the original rule is unchanged.
         """
         problems: list[str] = []
-        for path in sorted(V2.glob("0*.py")):
-            problems.extend(check_migration(path))
+        built: set[str] = set()
+        for path in chain_order(sorted(V2.glob("0*.py"))):
+            problems.extend(check_migration(path, existing=frozenset(built)))
+            built.update(_tables(path, "upgrade", "create_table"))
         self.assertEqual(problems, [], "\n".join(problems))
+
+    def test_a_use_before_create_inside_one_revision_is_still_caught(self) -> None:
+        """The relaxation above must not have disarmed the guard.
+
+        Seeding `existing` with earlier revisions' tables could have been done by
+        seeding it with *every* revision's tables, which would have silently
+        accepted the original Phase 2 bug. This asserts it did not.
+        """
+        import tempfile
+
+        source = (
+            "revision = 'x'\n"
+            "down_revision = None\n"
+            "def upgrade():\n"
+            "    op.create_index('ix_x', 'brand_new', ['a'])\n"
+            "    op.create_table('brand_new')\n"
+        )
+        with tempfile.NamedTemporaryFile("w", suffix=".py", delete=False) as handle:
+            handle.write(source)
+            temp = Path(handle.name)
+        try:
+            problems = check_migration(temp, existing=frozenset({"trade_orders"}))
+            self.assertTrue(problems)
+            self.assertIn("before it is created", problems[0])
+        finally:
+            temp.unlink()
 
     def test_every_partitioned_parent_is_partitioned_exactly_once(self) -> None:
         source = (V2 / "0002_phase2_market_data.py").read_text(encoding="utf-8")
@@ -472,6 +513,73 @@ class TestTableInventory(unittest.TestCase):
         self.assertNotIn("postgresql_partition_by", source)
         self.assertNotIn("PARTITION OF", source)
 
+    def test_phase_9_creates_exactly_the_risk_tables(self) -> None:
+        created = _tables(V2 / "0009_phase9_risk.py", "upgrade", "create_table")
+        self.assertEqual(sorted(created), sorted(PHASE9_TABLES))
+
+    def test_phase_9_makes_decisions_append_only(self) -> None:
+        """`02` §11: PRIMARY KEY (intent_id, sequence_no), no unique-per-intent.
+
+        `02` §6 says so explicitly -- "NO unique-per-intent constraint --
+        re-evaluation is normal" -- so this asserts the absence as well as the
+        presence.
+        """
+        source = (V2 / "0009_phase9_risk.py").read_text(encoding="utf-8")
+        self.assertIn("pk_risk_decisions", source)
+        self.assertNotIn("uq_risk_decisions_intent", source)
+
+    def test_phase_9_binds_an_order_to_an_approving_decision_of_its_own_intent(
+        self,
+    ) -> None:
+        """`02` §11's composite FK plus trigger. Both halves matter.
+
+        The FK alone would accept a REJECTED decision; the trigger alone would not
+        stop a decision belonging to another intent being referenced. Together
+        they make the bypass impossible at the storage layer.
+        """
+        source = (V2 / "0009_phase9_risk.py").read_text(encoding="utf-8")
+        self.assertIn("fk_trade_orders_authorizing_decision", source)
+        self.assertIn('["intent_id", "authorizing_decision_sequence"]', source)
+        self.assertIn('["intent_id", "sequence_no"]', source)
+        self.assertIn("trg_trade_orders_require_approved_decision", source)
+        self.assertIn("ck_trade_orders_authorization_complete", source)
+
+    def test_phase_9_introduces_no_phase_10_or_later_table(self) -> None:
+        """OMS, broker and reconciliation are Phase 10; attribution is Phase 11.
+
+        Checks the tables actually created rather than the word anywhere in the
+        file, so the docstring's disclaimer is not mistaken for a breach.
+        """
+        created = _tables(V2 / "0009_phase9_risk.py", "upgrade", "create_table")
+        for table in created:
+            for banned in ("oms", "broker", "reconcil", "attribution", "snapshot"):
+                with self.subTest(table=table, banned=banned):
+                    self.assertNotIn(banned, table.lower())
+        self.assertTrue(all(t.startswith("risk_") for t in created))
+
+    def test_phase_9_partitions_nothing(self) -> None:
+        source = (V2 / "0009_phase9_risk.py").read_text(encoding="utf-8")
+        self.assertNotIn("postgresql_partition_by", source)
+        self.assertNotIn("PARTITION OF", source)
+
+    def test_phase_9_downgrade_removes_the_columns_it_added(self) -> None:
+        """A downgrade that left the columns would break the next upgrade.
+
+        The generic mirror test only compares create_table/drop_table, so the
+        added columns, constraint, FK, index and trigger need their own check.
+        """
+        source = (V2 / "0009_phase9_risk.py").read_text(encoding="utf-8")
+        for dropped in (
+            'op.drop_column("trade_orders", "authorizing_decision_sequence")',
+            'op.drop_column("trade_orders", "authorizing_risk_decision_id")',
+            "DROP TRIGGER IF EXISTS trg_trade_orders_require_approved_decision",
+            "DROP FUNCTION IF EXISTS trade_orders_require_approved_decision",
+            "fk_trade_orders_authorizing_decision",
+            "ck_trade_orders_authorization_complete",
+        ):
+            with self.subTest(statement=dropped):
+                self.assertIn(dropped, source)
+
     def test_downgrade_mirrors_upgrade_in_all_revisions(self) -> None:
         """A downgrade that forgets a table leaves a schema the next upgrade cannot build."""
         for name in (
@@ -483,6 +591,7 @@ class TestTableInventory(unittest.TestCase):
             "0006_phase6_research.py",
             "0007_phase7_replay_backtest.py",
             "0008_phase8_paper_trading.py",
+            "0009_phase9_risk.py",
         ):
             with self.subTest(revision=name):
                 created = _tables(V2 / name, "upgrade", "create_table")
@@ -509,6 +618,7 @@ class TestTableInventory(unittest.TestCase):
             "0006_phase6_research.py",
             "0007_phase7_replay_backtest.py",
             "0008_phase8_paper_trading.py",
+            "0009_phase9_risk.py",
         ):
             source = (V2 / name).read_text(encoding="utf-8")
             for table in legacy:
