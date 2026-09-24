@@ -202,6 +202,65 @@ CONTRACTS: tuple[Contract, ...] = (
         ),
     ),
     Contract(
+        name="paper-trading-is-pure",
+        subject="trading",
+        allowed_only=frozenset(
+            {
+                "backtest",
+                "replay",
+                "research",
+                "signals",
+                "analytics",
+                "marketstate",
+                "events",
+                "core",
+            }
+        ),
+        forbidden_modules=frozenset({f"{ROOT_PACKAGE}.core.clock"}),
+        forbidden_external=_DB_AND_IO,
+        rationale=(
+            "The paper runtime must be constructible and testable with no database, "
+            "no HTTP client and no clock. The clock matters most: `11-TRADING.md` "
+            "and Phase 8 require market time to drive every transition, and a module "
+            "that could read the wall clock could silently substitute it for "
+            "market_time. Persisting a trade is the caller's job."
+        ),
+    ),
+    Contract(
+        name="paper-trading-cannot-reach-a-broker",
+        subject="trading",
+        forbidden=frozenset({"api", "alerts"}),
+        forbidden_modules=frozenset(
+            {
+                f"{ROOT_PACKAGE}.marketdata.providers",
+                f"{ROOT_PACKAGE}.marketdata.upstox",
+                f"{ROOT_PACKAGE}.marketdata.auth",
+                f"{ROOT_PACKAGE}.core.config",
+                f"{ROOT_PACKAGE}.core.secrets",
+            }
+        ),
+        rationale=(
+            "Phase 8 is paper-only and that must be a property of the import graph, "
+            "not a policy. The provider and Upstox packages are the only code that "
+            "can speak to the broker; `auth` and the settings/secrets modules are "
+            "the only code that can reach a credential. None is importable from "
+            "`trading`, so there is no path -- direct or transitive -- by which a "
+            "paper order could become a real one (11-TRADING.md §9)."
+        ),
+    ),
+    Contract(
+        name="paper-trading-imports-no-later-phase",
+        subject="trading",
+        forbidden=frozenset({"portfolio", "oms", "reconciliation", "terminal"}),
+        rationale=(
+            "Phase 8 implements paper trading only. The risk engine (Phase 9), the "
+            "OMS and live reconciliation (Phase 10), portfolio attribution "
+            "(Phase 11) and the terminal (Phase 12) are later layers; importing one "
+            "would build the next phase early and skip its gate. `trading.risk` is "
+            "the declared seam and is part of this package, not an import of Phase 9."
+        ),
+    ),
+    Contract(
         name="nothing-imports-api",
         subject="*",
         forbidden=frozenset({"api"}),
@@ -219,11 +278,26 @@ CONTRACTS: tuple[Contract, ...] = (
     Contract(
         name="risk-is-independent",
         subject="trading.risk",
-        forbidden=frozenset({"trading.oms", "trading.brokers", "strategies"}),
+        forbidden=frozenset(
+            {
+                "trading.oms",
+                "trading.brokers",
+                "strategies",
+                # Phase 8's equivalents of `oms`: the order machine, the execution
+                # model and the runtime. Named explicitly because the module layout
+                # is `trading/orders.py` rather than `trading/oms/`, and a contract
+                # that only knew the documented name would silently pass.
+                "trading.orders",
+                "trading.execution",
+                "trading.runtime",
+                "trading.ledger",
+            }
+        ),
         rationale=(
             "The component that says 'no' must not depend on the components it "
             "constrains. Risk must be testable with no trading infrastructure present "
-            "(11-TRADING.md §3)."
+            "(11-TRADING.md §3). It receives an intent plus context and returns a "
+            "decision -- that is the entire surface."
         ),
     ),
     Contract(

@@ -24,6 +24,14 @@ __all__ = [
     "record_backtest_run",
     "record_feature_computed",
     "record_feature_skipped",
+    "record_live_execution_refusal",
+    "record_paper_account",
+    "record_paper_execution_latency",
+    "record_paper_fill",
+    "record_paper_intent",
+    "record_paper_ledger_failure",
+    "record_paper_order",
+    "record_paper_sequence_gap",
     "record_provenance_failure",
     "record_replay_reconstruction",
     "record_replay_resume_rejection",
@@ -440,3 +448,115 @@ def record_backtest_run(
         METRICS.inc(BACKTEST_UNRISKED_RUNS, labels)
     if duplicate_fills:
         METRICS.inc(BACKTEST_LEDGER_DUPLICATES, labels, duplicate_fills)
+
+
+# --- Phase 8 paper trading (`16-OBSERVABILITY.md` conventions, `11-TRADING.md`).
+#
+# Every name is prefixed `paper_`. Phase 8 brief §21: "Do not create misleading
+# metrics for broker execution." A metric called `orders_submitted_total` on a
+# dashboard would read as broker traffic; `paper_orders_submitted_total` cannot.
+PAPER_ACCOUNTS = "paper_accounts_total"
+PAPER_INTENTS = "paper_intents_total"
+#: Intents refused before an order existed, labelled by reason.
+PAPER_INTENTS_REJECTED = "paper_intents_rejected_total"
+PAPER_ORDERS = "paper_orders_total"
+PAPER_ORDER_REJECTIONS = "paper_order_rejections_total"
+PAPER_FILLS = "paper_fills_total"
+PAPER_PARTIAL_FILLS = "paper_partial_fills_total"
+PAPER_CANCELLATIONS = "paper_cancellations_total"
+PAPER_EXPIRATIONS = "paper_expirations_total"
+#: Redeliveries absorbed by the inbox or the ledger's fill key. A healthy non-zero
+#: value; a *rising* one means something upstream is retrying harder than expected.
+PAPER_DUPLICATE_EVENTS = "paper_duplicate_events_total"
+#: Events deferred because their predecessor had not been applied. Should be rare and
+#: self-clearing; a sustained value means an aggregate's sequence is stuck.
+PAPER_SEQUENCE_GAPS = "paper_sequence_gaps_total"
+#: Wall-clock cost of processing one intent end to end. A *system* latency, explicitly
+#: not a market-time quantity -- it must never be mistaken for execution delay, which
+#: is modelled by the fill model's declared latency.
+PAPER_EXECUTION_LATENCY = "paper_execution_latency_seconds"
+PAPER_LEDGER_FAILURES = "paper_ledger_update_failures_total"
+#: Accounts running with no risk engine. While Phase 9 is pending this equals the
+#: account count; once it lands, a non-zero value is a misconfiguration.
+PAPER_UNRISKED_ACCOUNTS = "paper_unrisked_accounts_total"
+#: Attempts to reach a live execution path. Must always be zero: no live adapter
+#: exists, so a non-zero value means something tried and was refused.
+PAPER_LIVE_EXECUTION_REFUSALS = "paper_live_execution_refusals_total"
+
+
+def record_paper_account(account_id: str, *, status: str, risk_evaluated: bool) -> None:
+    """One account lifecycle transition."""
+    METRICS.inc(PAPER_ACCOUNTS, {"account": account_id, "status": status})
+    if not risk_evaluated:
+        METRICS.inc(PAPER_UNRISKED_ACCOUNTS, {"account": account_id})
+
+
+def record_paper_intent(
+    account_id: str,
+    *,
+    accepted: bool,
+    reject_reason: str | None = None,
+    duplicate: bool = False,
+) -> None:
+    """One intent submission, including the ones that went nowhere.
+
+    A rejected intent is counted under its reason rather than lumped in with
+    successes: "the strategy traded little" and "the strategy's intents were all
+    refused for insufficient cash" imply opposite conclusions.
+    """
+    labels = {"account": account_id}
+    if duplicate:
+        METRICS.inc(PAPER_DUPLICATE_EVENTS, {**labels, "kind": "intent"})
+        return
+    METRICS.inc(PAPER_INTENTS, {**labels, "accepted": str(accepted).lower()})
+    if not accepted:
+        METRICS.inc(PAPER_INTENTS_REJECTED, {**labels, "reason": reject_reason or "unspecified"})
+
+
+def record_paper_order(account_id: str, *, state: str, reject_reason: str | None = None) -> None:
+    """One order reaching a state. Labelled by state, so the mix is visible."""
+    labels = {"account": account_id}
+    METRICS.inc(PAPER_ORDERS, {**labels, "state": state})
+    if reject_reason is not None:
+        METRICS.inc(PAPER_ORDER_REJECTIONS, {**labels, "reason": reject_reason})
+    if state == "CANCELLED":
+        METRICS.inc(PAPER_CANCELLATIONS, labels)
+    elif state == "EXPIRED":
+        METRICS.inc(PAPER_EXPIRATIONS, labels)
+
+
+def record_paper_fill(
+    account_id: str, *, partial: bool, assumption_based: bool, duplicate: bool = False
+) -> None:
+    labels = {"account": account_id}
+    if duplicate:
+        METRICS.inc(PAPER_DUPLICATE_EVENTS, {**labels, "kind": "fill"})
+        return
+    METRICS.inc(PAPER_FILLS, {**labels, "assumption_based": str(assumption_based).lower()})
+    if partial:
+        METRICS.inc(PAPER_PARTIAL_FILLS, labels)
+
+
+def record_paper_sequence_gap(aggregate_type: str, aggregate_id: str) -> None:
+    METRICS.inc(
+        PAPER_SEQUENCE_GAPS, {"aggregate_type": aggregate_type, "aggregate": aggregate_id[:64]}
+    )
+
+
+def record_paper_execution_latency(account_id: str, seconds: float) -> None:
+    """System processing time, **not** modelled execution delay.
+
+    The two are different quantities and conflating them would make a slow process
+    look like a slow market. Modelled delay lives in the fill model's declared
+    latency and never appears here.
+    """
+    METRICS.observe(PAPER_EXECUTION_LATENCY, seconds, {"account": account_id})
+
+
+def record_paper_ledger_failure(account_id: str, reason: str) -> None:
+    METRICS.inc(PAPER_LEDGER_FAILURES, {"account": account_id, "reason": reason})
+
+
+def record_live_execution_refusal(requested_mode: str) -> None:
+    """Something asked for live execution and was refused. Must always be zero."""
+    METRICS.inc(PAPER_LIVE_EXECUTION_REFUSALS, {"requested_mode": requested_mode})

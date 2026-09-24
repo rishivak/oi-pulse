@@ -105,6 +105,18 @@ PHASE7_TABLES = (
     "replay_events",
 )
 
+#: Phase 8 paper-trading tables (`0008_phase8_paper_trading`). Also UNPARTITIONED:
+#: trade artifacts are immutable decision records, retained rather than pruned.
+PHASE8_TABLES = (
+    "trade_accounts",
+    "trade_intents",
+    "trade_orders",
+    "trade_order_events",
+    "trade_fills",
+    "portfolio_positions",
+    "journal_entries",
+)
+
 
 def _tables(path: Path, function: str, call: str) -> list[str]:
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=path.name)
@@ -148,14 +160,15 @@ class TestMigrationChain(unittest.TestCase):
                 "0005_phase5_signals",
                 "0006_phase6_research",
                 "0007_phase7_replay_backtest",
+                "0008_phase8_paper_trading",
             ],
-            "the chain must run legacy -> Phase 1 -> 2 -> 3 -> 4 -> 5 -> 6 -> 7, no branch",
+            "the chain must run legacy -> Phase 1 -> 2 -> 3 -> 4 -> 5 -> 6 -> 7 -> 8, no branch",
         )
 
     def test_exactly_one_head(self) -> None:
         downs = {rev.down_revision for rev in self.chain}
         heads = [rev.revision for rev in self.chain if rev.revision not in downs]
-        self.assertEqual(heads, ["0007_phase7_replay_backtest"])
+        self.assertEqual(heads, ["0008_phase8_paper_trading"])
 
     def test_upgrading_from_the_legacy_revision_reaches_phase_2(self) -> None:
         """A database stamped at `002` must have a path to head without manual edits."""
@@ -175,6 +188,7 @@ class TestMigrationChain(unittest.TestCase):
                 "0005_phase5_signals",
                 "0006_phase6_research",
                 "0007_phase7_replay_backtest",
+                "0008_phase8_paper_trading",
             ],
         )
 
@@ -402,6 +416,62 @@ class TestTableInventory(unittest.TestCase):
         self.assertNotIn("postgresql_partition_by", source)
         self.assertNotIn("PARTITION OF", source)
 
+    def test_phase_8_creates_exactly_the_paper_trading_tables(self) -> None:
+        created = _tables(V2 / "0008_phase8_paper_trading.py", "upgrade", "create_table")
+        self.assertEqual(sorted(created), sorted(PHASE8_TABLES))
+        self.assertEqual(len(created), len(set(created)), "no table created twice")
+
+    def test_phase_8_constrains_accounts_to_paper_mode(self) -> None:
+        """The database half of the paper-only gate.
+
+        `11-TRADING.md` §7 makes mode account-level so nothing downstream knows
+        paper from live; the CHECK exists because Phase 8 ships no live adapter, and
+        a row claiming LIVE would describe an account the system cannot serve.
+        """
+        source = (V2 / "0008_phase8_paper_trading.py").read_text(encoding="utf-8")
+        self.assertIn("ck_trade_accounts_paper_only", source)
+        self.assertIn("mode = 'PAPER'", source)
+
+    def test_phase_8_identity_constraints_make_retries_safe(self) -> None:
+        """The durable half of idempotency. In-memory checks are the fast half."""
+        source = (V2 / "0008_phase8_paper_trading.py").read_text(encoding="utf-8")
+        for constraint in (
+            "uq_trade_intents_intent_id",
+            "uq_trade_orders_order_id",
+            "uq_trade_fills_fill_key",
+            "uq_trade_order_events_sequence",
+            "uq_journal_entries_source",
+            "uq_portfolio_positions_identity",
+        ):
+            with self.subTest(constraint=constraint):
+                self.assertIn(constraint, source)
+        # A rejection with no cause is not an audit record.
+        self.assertIn("ck_trade_orders_rejection_has_reason", source)
+        # A decision cannot know less than the fact it rests on is old.
+        self.assertIn("ck_trade_intents_knowledge_after_market", source)
+
+    def test_phase_8_introduces_no_phase_9_or_later_table(self) -> None:
+        """Risk (9), live reconciliation (10) and attribution (11) are later phases.
+
+        Checks the tables actually created rather than the word anywhere in the
+        file: the migration docstring states that no such table is created, and a
+        substring search would flag that disclaimer.
+        """
+        created = _tables(V2 / "0008_phase8_paper_trading.py", "upgrade", "create_table")
+        for table in created:
+            for banned in ("risk", "reconcil", "attribution", "snapshot"):
+                with self.subTest(table=table, banned=banned):
+                    self.assertNotIn(banned, table.lower())
+        self.assertTrue(
+            all(t.startswith(("trade_", "portfolio_", "journal_")) for t in created),
+            f"unexpected table namespace in {created}",
+        )
+
+    def test_phase_8_partitions_nothing(self) -> None:
+        source = (V2 / "0008_phase8_paper_trading.py").read_text(encoding="utf-8")
+        self.assertNotIn("postgresql_partition_by", source)
+        self.assertNotIn("PARTITION OF", source)
+
     def test_downgrade_mirrors_upgrade_in_all_revisions(self) -> None:
         """A downgrade that forgets a table leaves a schema the next upgrade cannot build."""
         for name in (
@@ -412,6 +482,7 @@ class TestTableInventory(unittest.TestCase):
             "0005_phase5_signals.py",
             "0006_phase6_research.py",
             "0007_phase7_replay_backtest.py",
+            "0008_phase8_paper_trading.py",
         ):
             with self.subTest(revision=name):
                 created = _tables(V2 / name, "upgrade", "create_table")
@@ -437,6 +508,7 @@ class TestTableInventory(unittest.TestCase):
             "0005_phase5_signals.py",
             "0006_phase6_research.py",
             "0007_phase7_replay_backtest.py",
+            "0008_phase8_paper_trading.py",
         ):
             source = (V2 / name).read_text(encoding="utf-8")
             for table in legacy:

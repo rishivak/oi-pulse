@@ -29,6 +29,7 @@ from oipulse.api.backtest import router as backtest_router
 from oipulse.api.features import router as features_router
 from oipulse.api.health import registry, router
 from oipulse.api.market_state import router as market_router
+from oipulse.api.paper_trading import router as paper_trading_router
 from oipulse.api.replay import router as replay_router
 from oipulse.api.research import router as research_router
 from oipulse.api.signals import router as signals_router
@@ -81,6 +82,12 @@ def create_app(settings: Settings) -> FastAPI:
     # and, when it arrives, is gated separately (`12` §199).
     app.include_router(replay_router)
     app.include_router(backtest_router)
+    # Phase 8. Paper trading only. There is no `/trading` router: `12` §199 gates
+    # live trading behind the LIVE_TRADE permission and a feature flag, and Phase 8
+    # implements neither, because no live broker adapter exists to gate. Every
+    # response on this router states `mode: PAPER` and
+    # `live_execution_available: false`.
+    app.include_router(paper_trading_router)
 
     # Readiness covers this process's own dependencies: PostgreSQL (durable truth),
     # Redis (coordination) and the packages the role needs locally. Phase 1 registered
