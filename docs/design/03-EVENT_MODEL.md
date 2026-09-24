@@ -39,18 +39,61 @@ ingestion idempotency:
 A timestamp alone is never an identity. Two distinct events at the same timestamp
 resolution are two rows.
 
+**For Upstox V3 the resolution is always tier 3.** External verification of the live
+feed observed, across two distinct feed sessions, that `provider_event_id` is **absent**
+and `channel_sequence` is **absent** (AD-30, `20` §10 A-1/A-13). Tiers 1 and 2 remain
+implemented for a provider that does supply them; they are never reached on this feed,
+and neither field is ever synthesized.
+
+### Four distinct concepts
+
+Conflating any two of these is the failure this section exists to prevent.
+
+| Concept | What it is | Upstox V3 |
+|---|---|---|
+| **Provider identity** | an id the provider itself assigns to an event | none |
+| **OI Pulse-derived identity** | our deterministic digest of the decoded payload | the only identity available; `WEAK` confidence |
+| **Local receive ordering** | `received_seq`, a local arrival counter | present, diagnostics only |
+| **Provider ordering** | a sequence the provider supplies | none |
+
+The derived digest deduplicates correctly and is **never labelled a provider event id**.
+`received_seq` is **never promoted to an ordering authority**: arrival order is not
+market order, and a local counter presented as a sequence would manufacture a guarantee
+the feed does not give.
+
 ### Ordering
-`channel_sequence` defines order within a feed session — **not** arrival order. A
-`received_seq` local counter is stored separately so that arrival order remains
-recoverable for diagnostics, but no processing logic depends on it.
+`channel_sequence` defines order within a feed session — **not** arrival order — *when a
+provider supplies one*. Upstox V3 does not, so for that feed the ordering authority is
+`observed_at` plus the stored session ordinal. `received_seq` is stored separately so
+arrival order remains recoverable for diagnostics, but no processing logic depends on it.
 
 Across feed sessions (i.e. across a reconnect), ordering falls back to `observed_at`, and
 the boundary is recorded as a `RECONNECT_GAP` quality issue because cross-session ordering
 cannot be guaranteed.
 
-### Gap detection
-A discontinuity in `channel_sequence` within a session raises `WEBSOCKET_GAP` with the
-missing range. This is what triggers REST recovery (`04-MARKETSTATE.md` §4).
+### Gap detection — two different kinds, only one of them detectable here
+
+**Provider-sequence gap.** A discontinuity in `channel_sequence` within a session raises
+`WEBSOCKET_GAP` with the missing range. This requires a provider sequence, so **it is
+not detectable on Upstox V3** and is never claimed for it. Reporting "no gap" on a feed
+that cannot express one would be a false guarantee.
+
+**Connectivity / reconnect gap.** Detectable without any provider sequence, from
+connection loss, reconnect, elapsed silence against the explicit heartbeat budget, and
+expected observation continuity. This is what triggers REST recovery on Upstox V3:
+
+```
+connection interruption
+  -> RECONNECT_GAP (or STALE_FEED against the heartbeat budget)
+  -> recovery plan (out of band)
+  -> REST recovery fetch
+  -> canonical persistence, idempotent
+  -> stream resumes
+```
+
+A gap is **not** emitted merely because time elapsed: `STALE_FEED` is raised against the
+documented heartbeat budget and reports silence, not a count of lost messages. The gap
+window is recorded permanently and never interpolated (`04-MARKETSTATE.md` §4).
 
 ### Out-of-order arrival
 Accepted and stored with its true `observed_at`. Because state assembly queries by

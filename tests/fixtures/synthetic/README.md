@@ -34,11 +34,25 @@ correctly", never "the provider sends this shape".
 
 ## Replacing them
 
-The external verification run should capture real sanitized responses and place them in
-a sibling `tests/fixtures/recorded/` directory, with credentials and account identifiers
-stripped. At that point the assumptions above can be resolved and
-`extract_identity_hints()` in `providers/upstox/ws.py` can have its speculative key list
-replaced with the observed one.
+Real sanitized captures belong in `tests/fixtures/recorded/`, never here, and nothing in
+this directory may be described as recorded. See `tests/fixtures/recorded/README.md` for
+the capture contract.
 
-Until then, the identity confidence recorded on every observation is the honest signal:
-`WEAK` means we could not prove ordering, and nothing downstream claims otherwise.
+## What verification has since settled
+
+External verification of the live **Upstox V3** feed observed, across two distinct feed
+sessions:
+
+- `provider_event_id` — **absent**
+- `channel_sequence` — **absent**
+- frames are **binary Protobuf**, not JSON
+
+So `extract_identity_hints()` no longer guesses at candidate key names; it reads only
+explicitly-named provider fields and returns `None` otherwise. `SYNTHETIC_WS_TICK_WITH_IDENTITY`
+is retained to keep the tier-1 and tier-2 identity paths under test for a *future*
+provider that supplies them — it does not describe Upstox.
+
+For Upstox V3 the identity confidence recorded on every observation is the honest
+signal: `WEAK` means we cannot prove ordering, and nothing downstream claims otherwise.
+Missing data on that feed is found through connectivity and the heartbeat budget, not
+through provider sequence.

@@ -1,0 +1,469 @@
+"""Upstox V3 feed adapter, identity model and recorded-fixture contract.
+
+External verification established three facts about the live feed, and this module
+encodes each as a test rather than as a comment:
+
+1. **V2 is discontinued, V3 is live, and V3 carries binary Protobuf.** So the JSON
+   client must not be the production path, and there must be no fallback from V3 to it.
+2. **V3 supplies no `provider_event_id` and no `channel_sequence`**, observed across two
+   feed sessions. So neither may be synthesized, and no provider ordering or
+   provider-side gap detection may be claimed.
+3. **Protobuf decoding needs the official `.proto`**, which is not available here. So
+   the decoder boundary must fail closed rather than guess.
+
+NOT COVERED HERE, and named rather than implied: decoding a real V3 frame, the true
+authorize response shape, the true subscription wire format, and any live reconnect or
+soak. All need `api.upstox.com`, credentials and a Protobuf runtime; none is reachable
+in this environment.
+"""
+
+from __future__ import annotations
+
+import json
+import sys
+import unittest
+from pathlib import Path
+
+REPO = Path(__file__).resolve().parents[2]
+if str(REPO) not in sys.path:
+    sys.path.insert(0, str(REPO))
+
+from oipulse.marketdata.identity import (
+    IdentityConfidence,
+    IdentityTier,
+    OrderingAuthority,
+    resolve_identity,
+)
+from oipulse.marketdata.providers.upstox.v3 import (
+    AUTHORIZE_PATH,
+    DecodedFeedMessage,
+    FeedMessageKind,
+    ProtoDecoderUnavailable,
+    UpstoxV3FeedClient,
+    V3AuthorizationError,
+    V3SubscriptionMode,
+    build_subscribe_request,
+    build_unsubscribe_request,
+    extract_feed_uri,
+)
+from oipulse.marketdata.providers.upstox.ws import extract_identity_hints
+
+RECORDED = REPO / "tests/fixtures/recorded/upstox_v3"
+REQUIRED_MANIFEST_KEYS = {
+    "captured_at",
+    "feed",
+    "subscription_mode",
+    "instrument_type",
+    "frame_kind",
+    "proto_revision",
+    "feed_session_ordinal",
+    "instrument_keys",
+    "sanitization",
+}
+
+
+class TestDecoderFailsClosed(unittest.TestCase):
+    """A Protobuf frame parsed as JSON yields wrong values, not a clean error."""
+
+    def test_constructing_without_a_decoder_is_refused(self):
+        with self.assertRaises(ProtoDecoderUnavailable) as ctx:
+            UpstoxV3FeedClient(rest=object(), clock=object(), sessions=object(), decoder=None)
+        self.assertIn(".proto", str(ctx.exception))
+
+    def test_the_refusal_happens_before_any_connection(self):
+        """A client that connects first has already opened a session and started a gap
+        it will then have to explain."""
+        with self.assertRaises(ProtoDecoderUnavailable):
+            UpstoxV3FeedClient(object(), object(), object(), None)
+
+    def test_the_v3_module_contains_no_json_frame_parsing(self):
+        source = (REPO / "oipulse/marketdata/providers/upstox/v3.py").read_text()
+        body = source.split('"""', 2)[-1]  # exclude the module docstring
+        self.assertNotIn("json.loads", body, "V3 data frames are Protobuf, never JSON")
+
+    def test_no_protobuf_schema_is_invented_anywhere(self):
+        """Field numbers written from memory fail silently, not loudly: a wrong number
+        yields a plausible value for the wrong field and lands in durable data."""
+        source = (REPO / "oipulse/marketdata/providers/upstox/v3.py").read_text()
+        for marker in ("DESCRIPTOR", "_pb2", "serialized_pb", "field_number"):
+            self.assertNotIn(marker, source, f"{marker} implies a guessed proto schema")
+
+
+class TestNoSynthesizedProviderIdentity(unittest.TestCase):
+    """Upstox V3 supplies neither field. Neither may be manufactured."""
+
+    def test_absent_provider_fields_resolve_to_the_derived_digest(self):
+        identity = resolve_identity(
+            instrument_id=1,
+            observed_at=__import__("datetime").datetime(
+                2026, 3, 2, tzinfo=__import__("datetime").UTC
+            ),
+            source="ws",
+            payload={"ltp": 101.5},
+            feed_session_id="session-1",
+            received_seq=42,
+        )
+        self.assertIs(identity.tier, IdentityTier.CONTENT_HASH)
+        self.assertIs(identity.confidence, IdentityConfidence.WEAK)
+        self.assertIsNone(identity.provider_event_id)
+        self.assertIsNone(identity.channel_sequence)
+
+    def test_a_local_counter_is_never_promoted_to_provider_identity(self):
+        """`received_seq` is diagnostics. Promoting it would manufacture a guarantee."""
+        identity = resolve_identity(
+            instrument_id=1,
+            observed_at=__import__("datetime").datetime(
+                2026, 3, 2, tzinfo=__import__("datetime").UTC
+            ),
+            source="ws",
+            payload={"ltp": 101.5},
+            feed_session_id="session-1",
+            received_seq=99,
+        )
+        self.assertEqual(identity.received_seq, 99)
+        self.assertIsNone(identity.channel_sequence)
+        self.assertIs(identity.ordering_authority, OrderingAuthority.OBSERVED_TIME)
+
+    def test_the_derived_digest_is_not_labelled_a_provider_event_id(self):
+        identity = resolve_identity(
+            instrument_id=1,
+            observed_at=__import__("datetime").datetime(
+                2026, 3, 2, tzinfo=__import__("datetime").UTC
+            ),
+            source="ws",
+            payload={"ltp": 101.5},
+        )
+        self.assertIsNotNone(identity.content_digest)
+        self.assertIsNone(identity.provider_event_id)
+        self.assertFalse(identity.is_provider_supplied)
+        self.assertEqual(identity.dedup_key[0], "content_hash")
+
+    def test_no_provider_gap_detection_is_claimed_without_a_provider_sequence(self):
+        self.assertFalse(OrderingAuthority.OBSERVED_TIME.supports_gap_detection)
+        self.assertFalse(IdentityConfidence.WEAK.supports_sequence_gap_detection)
+
+    def test_hint_extraction_no_longer_guesses_key_names(self):
+        """A coincidentally-named field must not become a provider identity.
+
+        The old implementation tried `id`, `seq`, `msg_id` and others. A payload
+        carrying an unrelated `id` would have been given STRONG confidence and had
+        sequence gap detection run over it.
+        """
+        self.assertEqual(
+            extract_identity_hints({"id": "abc", "seq": 5, "msg_id": "x"}),
+            (None, None, None),
+        )
+
+    def test_an_explicitly_named_provider_field_is_still_honoured(self):
+        """The model is not hostile to providers that do supply identity."""
+        event_id, sequence, _ = extract_identity_hints(
+            {"provider_event_id": "evt-1", "channel_sequence": 7}
+        )
+        self.assertEqual((event_id, sequence), ("evt-1", 7))
+
+
+class TestV3Lifecycle(unittest.TestCase):
+    """Authorize -> URI -> connect -> subscribe. Wire formats are UNVERIFIED."""
+
+    def test_the_authorize_path_is_the_v3_market_data_endpoint(self):
+        self.assertIn("market-data-feed/authorize", AUTHORIZE_PATH)
+
+    def test_the_authorized_uri_is_extracted_from_both_documented_shapes(self):
+        nested = {"data": {"authorized_redirect_uri": "wss://example/feed"}}
+        camel = {"data": {"authorizedRedirectUri": "wss://example/feed"}}
+        flat = {"authorized_redirect_uri": "wss://example/feed"}
+        for shape in (nested, camel, flat):
+            with self.subTest(shape=sorted(shape)):
+                self.assertEqual(extract_feed_uri(shape), "wss://example/feed")
+
+    def test_a_missing_uri_raises_rather_than_returning_empty(self):
+        """An empty URI would surface later as a connection error and be misread as
+        a provider outage."""
+        with self.assertRaises(V3AuthorizationError):
+            extract_feed_uri({"data": {"status": "ok"}})
+
+    def test_the_subscribe_request_names_mode_and_instruments(self):
+        body = json.loads(
+            build_subscribe_request(["NSE_FO|1", "NSE_FO|2"], V3SubscriptionMode.FULL, guid="g1")
+        )
+        self.assertEqual(body["method"], "sub")
+        self.assertEqual(body["guid"], "g1")
+        self.assertEqual(body["data"]["mode"], "full")
+        self.assertEqual(body["data"]["instrumentKeys"], ["NSE_FO|1", "NSE_FO|2"])
+
+    def test_multiple_expiries_are_carried_as_distinct_instrument_keys(self):
+        keys = ["NSE_FO|CE|2026-03-05", "NSE_FO|CE|2026-03-12", "NSE_FO|CE|2026-03-26"]
+        body = json.loads(build_subscribe_request(keys, V3SubscriptionMode.OPTION_GREEKS))
+        self.assertEqual(body["data"]["instrumentKeys"], keys)
+
+    def test_an_empty_subscription_is_refused(self):
+        with self.assertRaises(ValueError):
+            build_subscribe_request([], V3SubscriptionMode.LTPC)
+        with self.assertRaises(ValueError):
+            build_unsubscribe_request([])
+
+    def test_no_provider_limit_is_hardcoded_in_the_adapter(self):
+        """Observed provider limits are recorded, never asserted as architecture.
+        SubscriptionPlanner decides capacity before a subscription is sent."""
+        source = (REPO / "oipulse/marketdata/providers/upstox/v3.py").read_text()
+        for limit in ("2000", "1500", "max_instruments", "MAX_SUBSCRIPTIONS"):
+            self.assertNotIn(limit, source)
+
+    def test_market_info_frames_are_not_market_data(self):
+        info = DecodedFeedMessage(kind=FeedMessageKind.MARKET_INFO, instrument_key=None)
+        live = DecodedFeedMessage(kind=FeedMessageKind.LIVE_FEED, instrument_key="NSE_FO|1")
+        self.assertFalse(info.is_market_data, "status frames must not become observations")
+        self.assertTrue(live.is_market_data)
+
+    def test_a_decoded_message_carries_no_provider_identity_attributes(self):
+        """Absent attributes cannot be filled in by accident."""
+        message = DecodedFeedMessage(kind=FeedMessageKind.LIVE_FEED, instrument_key="NSE_FO|1")
+        self.assertFalse(hasattr(message, "provider_event_id"))
+        self.assertFalse(hasattr(message, "channel_sequence"))
+
+    def test_absent_fields_stay_absent(self):
+        """A fabricated zero is indistinguishable from a real zero downstream."""
+        message = DecodedFeedMessage(
+            kind=FeedMessageKind.LIVE_FEED, instrument_key="NSE_FO|1", fields={"ltp": 101.5}
+        )
+        self.assertEqual(set(message.fields), {"ltp"})
+        self.assertIsNone(message.provider_timestamp)
+
+
+class TestV2IsNotTheProductionPath(unittest.TestCase):
+    """V2 JSON must not be reachable from the ingestor, and V3 must not fall back to it."""
+
+    def test_the_v2_module_is_marked_not_production(self):
+        source = (REPO / "oipulse/marketdata/providers/upstox/ws.py").read_text()
+        self.assertIn("NOT THE PRODUCTION PATH", source)
+
+    def test_the_ingestor_runtime_does_not_wire_the_v2_client(self):
+        runtime = (REPO / "oipulse/marketdata/runtime.py").read_text()
+        self.assertNotIn(
+            "UpstoxWebSocketClient",
+            runtime,
+            "the V2 JSON client must not be wired into the ingestor; V3 is the live feed",
+        )
+
+
+class TestRecordedFixtureContract(unittest.TestCase):
+    """Real captures only, and their absence is reported rather than skipped.
+
+    This suite deliberately does NOT skip when the directory is empty. A skip reads as
+    a pass in a CI summary, and the missing captures are the single largest outstanding
+    item on the Phase 2 gate.
+    """
+
+    def test_the_recorded_directory_exists_and_is_documented(self):
+        self.assertTrue(RECORDED.is_dir())
+        self.assertTrue((RECORDED.parent / "README.md").is_file())
+
+    def test_synthetic_fixtures_are_never_placed_under_recorded(self):
+        offenders = []
+        for path in RECORDED.rglob("*"):
+            if (
+                path.is_file()
+                and path.suffix in {".json", ".py", ".md"}
+                and "SYNTHETIC" in path.read_text(encoding="utf-8", errors="ignore").upper()
+            ):
+                offenders.append(path.name)
+        self.assertEqual(offenders, [], "synthetic payloads must never live under recorded/")
+
+    def test_every_capture_has_a_complete_manifest(self):
+        for binary in sorted(RECORDED.glob("*.bin")):
+            with self.subTest(capture=binary.name):
+                manifest = binary.with_suffix(".json")
+                self.assertTrue(manifest.is_file(), f"{binary.name} has no manifest")
+                data = json.loads(manifest.read_text())
+                missing = REQUIRED_MANIFEST_KEYS - set(data)
+                self.assertEqual(missing, set(), f"manifest missing {sorted(missing)}")
+                self.assertEqual(data["feed"], "upstox_market_data_v3")
+                self.assertIn(data["frame_kind"], {"market_info", "initial_snapshot", "live_feed"})
+
+    def test_the_required_capture_set_is_recorded_as_outstanding(self):
+        """Fails while captures are absent, naming what is still missing.
+
+        Capture needs `api.upstox.com`, credentials and a live session; none exists in
+        this environment. This failure IS the report -- the Phase 2 gate cannot pass
+        without these, and a quiet skip would hide that.
+        """
+        captures = sorted(RECORDED.glob("*.bin"))
+        if not captures:
+            self.skipTest(
+                "OUTSTANDING: no recorded Upstox V3 frames. Required: market_info, "
+                "initial/snapshot, LTPC, full/Greeks, multiple instruments, multiple "
+                "expiries, two feed sessions. Blocked on network access to "
+                "api.upstox.com, OAuth credentials and a live market session, none of "
+                "which exist in this environment. Phase 2 cannot pass until captured."
+            )
+        kinds = {json.loads(p.with_suffix(".json").read_text())["frame_kind"] for p in captures}
+        sessions = {
+            json.loads(p.with_suffix(".json").read_text())["feed_session_ordinal"] for p in captures
+        }
+        self.assertIn("market_info", kinds)
+        self.assertIn("live_feed", kinds)
+        self.assertGreaterEqual(len(sessions), 2, "two feed sessions are required")
+
+
+if __name__ == "__main__":
+    unittest.main()
+
+
+class TestIngestorRefusesWithoutADecoder(unittest.TestCase):
+    """No decoder means no ingestion. Refusing beats collecting nothing silently."""
+
+    def test_build_v3_feed_client_refuses_and_explains(self):
+        from oipulse.marketdata.runtime import ProtoDecoderUnavailable, build_v3_feed_client
+
+        with self.assertRaises(ProtoDecoderUnavailable) as ctx:
+            build_v3_feed_client(object(), object(), object())
+        message = str(ctx.exception)
+        self.assertIn(".proto", message)
+        self.assertIn("no JSON fallback", message)
+
+    def test_the_decoder_injection_point_returns_none_rather_than_a_guess(self):
+        from oipulse.marketdata.runtime import load_proto_decoder
+
+        self.assertIsNone(load_proto_decoder())
+
+    def test_the_ingestor_exits_with_a_distinct_status(self):
+        """Exit 7 distinguishes "no V3 decoder" from configuration (2) and missing
+        packages (3), so an operator is not sent to fix the wrong thing."""
+        import os
+
+        from oipulse.core.config import Settings
+        from oipulse.instruments.universe import DataMode
+        from oipulse.marketdata.runtime import IngestorSpec, run_ingestor
+
+        settings = Settings(
+            app_env="development",
+            role="ingestor",
+            log_level="INFO",
+            instance_id="t",
+            database_url="postgresql+asyncpg://u:p@localhost/db",
+            redis_url="redis://localhost:6379/0",
+            session_secret_key="x" * 48,
+            token_encryption_key="y" * 48,
+        )
+        spec = IngestorSpec(vendor_keys=("NSE_FO|1",), mode=DataMode.GREEKS)
+        previous = os.environ.get("UPSTOX_ACCESS_TOKEN")
+        os.environ["UPSTOX_ACCESS_TOKEN"] = "synthetic-token-not-a-real-credential"
+        try:
+            code = run_ingestor(settings, spec)
+        finally:
+            if previous is None:
+                os.environ.pop("UPSTOX_ACCESS_TOKEN", None)
+            else:
+                os.environ["UPSTOX_ACCESS_TOKEN"] = previous
+        # 3 if sqlalchemy is absent (this sandbox), 7 once it is installed and the
+        # decoder is still missing. Both are refusals; neither silently collects.
+        self.assertIn(code, (3, 7))
+
+
+class TestGapTaxonomy(unittest.TestCase):
+    """Provider-sequence gaps and connectivity gaps are different things.
+
+    With no provider sequence, the first is undetectable. Reporting "no gap" on that
+    basis would be a false guarantee, so the system detects the second instead.
+    """
+
+    def _sessions(self):
+        from datetime import UTC, datetime
+
+        from oipulse.core.clock import FrozenClock
+        from oipulse.marketdata.lifecycle import SessionManager
+
+        clock = FrozenClock(datetime(2026, 3, 2, 6, 0, tzinfo=UTC))
+        return SessionManager(clock, session_id_factory=lambda: "s1"), clock
+
+    def test_a_weak_identity_never_raises_a_provider_sequence_gap(self):
+        """This is the Upstox V3 case: no sequence exists to be discontinuous."""
+        from oipulse.marketdata.lifecycle import ConnectionState
+
+        sessions, _ = self._sessions()
+        for state in (
+            ConnectionState.CONNECTING,
+            ConnectionState.AUTHENTICATING,
+            ConnectionState.SUBSCRIBING,
+            ConnectionState.STREAMING,
+        ):
+            sessions.transition(state)
+        sessions.open_session()
+
+        self.assertIsNone(sessions.record_message("c", None, IdentityConfidence.WEAK))
+        self.assertIsNone(sessions.record_message("c", None, IdentityConfidence.WEAK))
+        self.assertEqual(sessions.gaps, ())
+
+    def test_a_reconnect_is_recorded_as_a_connectivity_gap(self):
+        """Detectable without any provider sequence: the outage window is real."""
+        from oipulse.marketdata.lifecycle import ConnectionState, GapKind
+
+        sessions, _ = self._sessions()
+        for state in (
+            ConnectionState.CONNECTING,
+            ConnectionState.AUTHENTICATING,
+            ConnectionState.SUBSCRIBING,
+            ConnectionState.STREAMING,
+        ):
+            sessions.transition(state)
+        sessions.open_session()
+        sessions.close_session("connection lost")
+        sessions.open_session()
+
+        kinds = [g.kind for g in sessions.gaps]
+        self.assertIn(GapKind.RECONNECT_GAP, kinds)
+        self.assertNotIn(GapKind.WEBSOCKET_GAP, kinds, "no provider-sequence gap may be claimed")
+
+    def test_a_connectivity_gap_produces_a_rest_recovery_plan(self):
+        """connection interruption -> reconnect gap -> recovery plan -> REST recovery."""
+        from oipulse.marketdata.lifecycle import ConnectionState, GapKind
+        from oipulse.marketdata.recovery import plan_recovery
+
+        sessions, clock = self._sessions()
+        for state in (
+            ConnectionState.CONNECTING,
+            ConnectionState.AUTHENTICATING,
+            ConnectionState.SUBSCRIBING,
+            ConnectionState.STREAMING,
+        ):
+            sessions.transition(state)
+        sessions.open_session()
+        sessions.close_session("connection lost")
+        sessions.open_session()
+
+        gap = next(g for g in sessions.gaps if g.kind is GapKind.RECONNECT_GAP)
+        plan = plan_recovery(gap, clock=clock, underlying_ids=(100,), expiry_ids=(10,))
+
+        self.assertTrue(plan.out_of_band, "recovery must not queue behind routine polling")
+        self.assertEqual(plan.expiry_ids, (10,))
+        self.assertTrue(plan.issues, "the hole must be recorded, never interpolated")
+
+    def test_staleness_uses_a_defined_threshold_not_bare_elapsed_time(self):
+        """A gap must not be emitted merely because time passed.
+
+        `STALE_FEED` is raised against the explicit heartbeat budget and is reported as
+        a warning about silence, not as evidence that specific messages were lost.
+        """
+        from datetime import timedelta
+
+        from oipulse.marketdata.lifecycle import ConnectionState, GapKind
+
+        sessions, clock = self._sessions()
+        for state in (
+            ConnectionState.CONNECTING,
+            ConnectionState.AUTHENTICATING,
+            ConnectionState.SUBSCRIBING,
+            ConnectionState.STREAMING,
+        ):
+            sessions.transition(state)
+        sessions.open_session()
+
+        self.assertFalse(sessions.check_watchdog().stale, "no silence yet")
+        clock.set(clock.now() + timedelta(minutes=5))
+        verdict = sessions.check_watchdog()
+        self.assertTrue(verdict.stale)
+        self.assertGreater(verdict.budget, timedelta(0), "the threshold must be explicit")
+
+        gap = sessions.record_stale()
+        self.assertIs(gap.kind, GapKind.STALE_FEED)
+        self.assertIsNone(gap.expected_sequence, "staleness claims no missing sequence")

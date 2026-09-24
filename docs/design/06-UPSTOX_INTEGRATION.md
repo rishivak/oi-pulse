@@ -195,20 +195,53 @@ interpolated.
 Subscription is driven by the `SubscriptionPlanner`'s accepted plan (§5), and re-planned on
 universe change without dropping the connection where the provider permits.
 
-### Provider sequence and timestamp semantics — verified, not assumed
+### Feed version — V3, binary Protobuf
 
-The identity hierarchy (`03-EVENT_MODEL.md` §2) prefers a provider event id or channel
-sequence. **Whether Upstox supplies either with the needed semantics is unverified**
-(assumption A-1, `20-ARCHITECTURE_FREEZE.md` §10). Until the Phase 2 soak settles it, the
-system must not treat an unverified provider guarantee as a correctness axiom.
+External verification established that the Upstox **V2** market-data WebSocket is
+discontinued and **V3** is the live feed. V3 carries **binary Protobuf frames**, not
+JSON, and V3 authorization returns the authorized WebSocket URI:
 
-Resolution — the design degrades explicitly rather than assuming:
+```
+OAuth token -> V3 market-data authorize endpoint -> authorized WebSocket URI
+  -> connect -> subscribe (V3 request format) -> binary Protobuf frames
+  -> decode with the official V3 .proto -> normalize to canonical observations
+```
+
+The decoder is **injected, not bundled** (AD-31). `UpstoxV3FeedClient` raises
+`ProtoDecoderUnavailable` at construction when none is supplied, and there is no
+fallback to the V2 JSON parser: a Protobuf frame parsed as JSON yields no observations
+while the process reports itself healthy, which is worse than refusing to start. The
+subscription *control* channel is JSON; the *data* frames are not. The two must not be
+confused.
+
+Subscription capacity is still decided by `SubscriptionPlanner` **before** any
+subscription is sent (§5). Observed provider limits are recorded as observations, never
+hardcoded in the adapter as architectural truths.
+
+### Provider sequence and timestamp semantics — verified
+
+**A-1 is resolved, negatively.** Verification of the live V3 feed observed, across two
+distinct feed sessions:
+
+```
+provider_event_id : absent
+channel_sequence  : absent
+```
+
+So Upstox V3 supplies **no provider identity and no provider ordering**. This is the
+provider's actual behaviour, recorded rather than worked around. The adapter does not
+search for candidate field names: an earlier version tried `id`, `seq`, `msg_id` and
+others, which risked promoting a coincidentally-named field to a provider identity with
+`STRONG` confidence and running sequence gap detection over it.
+
+The table below therefore describes the general contract; the last row is the Upstox V3
+case and the only one that occurs on this feed:
 
 | Provider supplies | Identity used | `identity_confidence` | Gap detection |
 |---|---|---|---|
 | Stable per-event id | `provider_event_id` | `STRONG` | exact — missing ids detectable |
 | Per-channel sequence | `(feed_session_id, channel, channel_sequence)` | `STRONG` | exact — discontinuity detectable |
-| Neither | `(instrument_id, observed_at, source, content_hash)` | `WEAK` | **heuristic only** — staleness and coverage, not sequence gaps |
+| Neither — **Upstox V3** | `(instrument_id, observed_at, source, content_hash)`, an **OI Pulse-derived** digest, never labelled a provider event id | `WEAK` | **connectivity-based only** — reconnect, staleness against the heartbeat budget, and coverage; never sequence gaps |
 
 Rules that hold in every case:
 - `identity_confidence` is **stored on every observation**, so a consumer always knows how
@@ -219,10 +252,18 @@ Rules that hold in every case:
 - Replay ordering stays deterministic regardless, because its key falls back to
   `(observed_at, feed_session_ordinal, id)` (`10-REPLAY.md` §3).
 
-**Provider timestamp mapping** is likewise verified in Phase 2 (assumption A-3): if venue
-timestamps are absent or unreliable on WS frames, `observed_at` falls back to receipt time,
-`ingested_at` equals it, and that substitution is **recorded per feed** — because it
-materially weakens the bitemporal guarantee and must not be silent.
+- **Nothing is synthesized.** A `provider_event_id` or `channel_sequence` is never
+  derived from the local `received_seq`, the content digest or a timestamp. A
+  synthesized sequence is indistinguishable downstream from a real one and would satisfy
+  every gap check while proving nothing (AD-30).
+- **Absent fields stay absent.** A decoded frame reports only the fields it actually
+  carried; a fabricated zero is indistinguishable from a real zero.
+
+**Provider timestamp mapping** remains open (assumption A-3) pending recorded V3 frames:
+provider timestamps are preserved **where actually supplied**, and where absent
+`observed_at` falls back to receipt time, `ingested_at` equals it, and the substitution
+is **recorded per feed** — because it materially weakens the bitemporal guarantee and
+must not be silent.
 
 ---
 

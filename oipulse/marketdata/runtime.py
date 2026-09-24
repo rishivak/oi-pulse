@@ -57,6 +57,11 @@ from oipulse.marketdata.providers.upstox.provider import (
     InstrumentResolver,
     UpstoxMarketDataProvider,
 )
+from oipulse.marketdata.providers.upstox.v3 import (
+    ProtoDecoderUnavailable,
+    ProtoFrameDecoder,
+    UpstoxV3FeedClient,
+)
 from oipulse.marketdata.ratelimit import RateLimitGovernor
 from oipulse.marketdata.subscription import SubscriptionPlanner, SubscriptionRequest
 from oipulse.observability.logging import get_logger
@@ -74,7 +79,9 @@ __all__ = [
     "IngestorSpec",
     "PreflightFailed",
     "build_spec_from_env",
+    "build_v3_feed_client",
     "default_session_predicate",
+    "load_proto_decoder",
     "parse_universe",
     "run_ingestor",
 ]
@@ -313,6 +320,39 @@ def _install_signal_handlers(loop: asyncio.AbstractEventLoop, runtime: IngestorR
             loop.add_signal_handler(sig, lambda s=sig: runtime.shutdown(f"signal_{s.name}"))
 
 
+def load_proto_decoder() -> ProtoFrameDecoder | None:
+    """Return the Upstox V3 Protobuf decoder, or None if none is available.
+
+    The single injection point for the provider-owned `.proto`. It returns None today:
+    the official V3 definition is not bundled, the development environment cannot reach
+    `api.upstox.com` to obtain it, and no Protobuf runtime is installable here.
+
+    Returning None rather than a guessed decoder is the whole point. Protobuf field
+    numbers written from memory do not fail loudly -- a wrong number decodes to a
+    plausible value for the wrong field, which then lands in durable market data and
+    is indistinguishable from a real observation.
+    """
+    return None
+
+
+def build_v3_feed_client(
+    rest: object, clock: Clock, sessions: SessionManager
+) -> UpstoxV3FeedClient:
+    """Construct the V3 feed client, or refuse with an actionable message."""
+    decoder = load_proto_decoder()
+    if decoder is None:
+        raise ProtoDecoderUnavailable(
+            "the ingestor cannot start: the Upstox V3 market-data feed carries binary "
+            "Protobuf and no decoder is available.\n"
+            "Supply the official V3 .proto definition and return a decoder from "
+            "oipulse.marketdata.runtime.load_proto_decoder().\n"
+            "There is deliberately no JSON fallback -- Upstox V2 market data is "
+            "discontinued, and parsing a V3 frame as JSON yields no observations "
+            "rather than an error."
+        )
+    return UpstoxV3FeedClient(rest, clock, sessions, decoder)
+
+
 def parse_universe(document: str) -> IngestorSpec:
     """Build an `IngestorSpec` from the shard's JSON universe description.
 
@@ -432,7 +472,6 @@ def run_ingestor(settings: Settings, spec: IngestorSpec | None = None) -> int:
 
     try:
         from oipulse.marketdata.providers.upstox.rest import UpstoxRestClient
-        from oipulse.marketdata.providers.upstox.ws import UpstoxWebSocketClient
         from oipulse.marketdata.store.postgres import PostgresObservationRepository
     except ModuleNotFoundError as exc:  # pragma: no cover - environment dependent
         print(
@@ -454,13 +493,19 @@ def run_ingestor(settings: Settings, spec: IngestorSpec | None = None) -> int:
 
     governor = RateLimitGovernor(clock)
     resolver = InstrumentResolver()
-    provider = UpstoxMarketDataProvider(
-        UpstoxRestClient(access_token, clock, governor),
-        clock,
-        resolver,
-        sessions,
-        UpstoxWebSocketClient(access_token, clock, sessions),
-    )
+    rest = UpstoxRestClient(access_token, clock, governor)
+
+    # The live feed is Upstox **V3**, which carries binary Protobuf. The V2 JSON client
+    # is deliberately not wired here: V2 market data is discontinued, and falling back
+    # to it would parse binary frames as JSON and silently produce no observations.
+    try:
+        feed = build_v3_feed_client(rest, clock, sessions)
+    except ProtoDecoderUnavailable as exc:
+        log.error("ingestor_v3_decoder_unavailable")
+        print(str(exc), file=sys.stderr)
+        return 7
+
+    provider = UpstoxMarketDataProvider(rest, clock, resolver, sessions, feed)
 
     async def main() -> None:
         from sqlalchemy.ext.asyncio import create_async_engine

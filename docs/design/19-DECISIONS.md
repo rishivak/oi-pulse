@@ -283,6 +283,58 @@ rather than leaving it to review.
 
 ---
 
+### AD-30 — Upstox V3 supplies no provider event identity; ours is derived, and labelled so
+**Decision** External verification of the live Upstox **V3** market-data feed observed,
+across two distinct feed sessions, that `provider_event_id` is **absent** and
+`channel_sequence` is **absent**. Four concepts are therefore kept explicitly distinct
+and are never substituted for one another:
+
+| Concept | For Upstox V3 |
+|---|---|
+| **Provider identity** — an id the provider assigns | none; never synthesized |
+| **OI Pulse-derived identity** — our deterministic digest of the decoded payload | the only identity available; `IdentityTier.CONTENT_HASH`, `IdentityConfidence.WEAK` |
+| **Local receive ordering** — `received_seq` | diagnostics only; never an ordering authority |
+| **Provider ordering** — a sequence the provider supplies | none exists for this feed |
+
+`ObservationIdentity.ordering_authority` returns `OBSERVED_TIME` rather than
+`PROVIDER_SEQUENCE`, and `OrderingAuthority.supports_gap_detection` is False.
+
+**Rejected** Synthesizing a `provider_event_id` or a `channel_sequence` from the local
+arrival counter, the content digest or a timestamp.
+**Why** A synthesized sequence is indistinguishable, downstream, from one the provider
+supplied. It would satisfy every gap-detection check while proving nothing, converting
+an acknowledged blind spot into a false guarantee — which is strictly worse, because a
+blind spot invites compensating controls and a false guarantee suppresses them. The
+same reasoning retires the previous speculative key-name search in
+`extract_identity_hints`: a coincidentally-named `id` field would have been promoted to
+a provider identity with STRONG confidence and had sequence gap detection run over it.
+**Cost** Upstream provider-sequence gaps are undetectable on this feed. Missing data is
+found instead through connectivity — disconnect, reconnect, heartbeat budget — and
+repaired by REST recovery, which is weaker and is documented as such rather than
+papered over.
+
+---
+
+### AD-31 — The V3 Protobuf decoder is injected, and the adapter fails closed without it
+**Decision** `providers/upstox/v3.py` defines the V3 lifecycle (authorize → authorized
+URI → connect → subscribe → binary frames → decode → normalize) but ships **no**
+Protobuf decoder. `UpstoxV3FeedClient` requires one to be injected and raises
+`ProtoDecoderUnavailable` at construction otherwise. The ingestor surfaces this as a
+distinct exit status and refuses to start.
+**Rejected** Writing the proto field mapping from memory; falling back to the V2 JSON
+parser.
+**Why** Decoding Protobuf requires the provider-owned `.proto`: message names, field
+numbers, wire types. A wrong field number does not raise — it decodes to a plausible
+value for the wrong field, which lands in durable market data and is indistinguishable
+from a real observation. Falling back to JSON is worse still: V2 market data is
+discontinued, and a binary frame parsed as JSON yields no observations while the process
+reports itself healthy.
+**Cost** The ingestor cannot stream until the official definition is supplied to
+`load_proto_decoder()`. That is the correct failure: no data is better than wrong data
+in a store whose whole value is being trustworthy about the past.
+
+---
+
 ## Trade-offs accepted, summarized
 
 | We accept | To get |
@@ -305,3 +357,5 @@ rather than leaving it to review.
 | A second temporal shape for daily OI | Backfilled data can never pose as intraday state |
 | Risk approvals expire | No order submitted on a stale approval |
 | Hand-written config validation in `core` | The innermost layer stays dependency-free, so `analytics` genuinely cannot reach a DB or HTTP client |
+| No provider-sequence gap detection on Upstox V3 | An acknowledged blind spot instead of a fabricated ordering guarantee |
+| An ingestor that refuses to start without the official V3 `.proto` | No silently mis-decoded field ever reaches durable market data |

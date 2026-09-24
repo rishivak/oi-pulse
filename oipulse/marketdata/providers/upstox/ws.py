@@ -1,4 +1,16 @@
-"""Upstox WebSocket client — transport only.
+"""Upstox WebSocket client (V2 JSON) — **NOT THE PRODUCTION PATH**.
+
+.. warning::
+
+   External verification established that the Upstox **V2** market-data WebSocket is
+   discontinued and that **V3** is the live feed, carrying binary Protobuf rather than
+   JSON. This module parses JSON and is therefore retained only for the reconnect,
+   backoff and session-lifecycle behaviour it already has under test — behaviour the V3
+   client reuses. It must not be wired into the ingestor.
+
+   The production feed adapter is `providers/upstox/v3.py`. A Protobuf frame parsed as
+   JSON does not fail cleanly; it raises or silently yields nothing, and either way the
+   result is missing market data, so there is no fallback from V3 to this module.
 
 `docs/design/06-UPSTOX_INTEGRATION.md` §6.
 
@@ -15,11 +27,15 @@ whole behaviour to discover.
 
 NOT EXECUTABLE IN THE DEVELOPMENT SANDBOX: requires `websockets` and network access.
 
-**Assumptions this module does not make (constraint D).** Whether Upstox supplies a
-per-event id or a per-channel sequence is **unverified** (A-1). `_extract_identity_hints`
-returns whatever is present and nothing more; when neither is present, identity resolves
-to a content hash with `WEAK` confidence and sequence-based gap detection is not
-performed and not claimed.
+**Provider identity (settled for V3).** Upstox V3 supplies neither a provider event id
+nor a channel sequence; verification observed both absent across two feed sessions.
+`extract_identity_hints` therefore no longer guesses at candidate key names. It reads
+only the two keys a provider would have to declare explicitly, and returns `None`
+otherwise — which resolves identity to the OI Pulse-derived content digest with `WEAK`
+confidence, where sequence-based gap detection is neither performed nor claimed.
+
+Nothing here synthesizes a `provider_event_id` or a `channel_sequence` from a local
+counter, a hash, or a timestamp.
 """
 
 from __future__ import annotations
@@ -75,30 +91,30 @@ class WsFrame:
 def extract_identity_hints(
     message: dict[str, Any],
 ) -> tuple[str | None, int | None, Any | None]:
-    """Pull `(provider_event_id, channel_sequence, venue_timestamp)` if present.
+    """Pull `(provider_event_id, channel_sequence, venue_timestamp)` if actually present.
 
-    Candidate key names are tried because the exact field names are **unverified**
-    (A-1, A-3). Returning `None` is a normal, expected outcome, not a failure — it
-    degrades identity confidence to WEAK, which is recorded rather than hidden.
+    Previously this tried a list of guessed key names — `id`, `seq`, `msg_id` and
+    others — on the theory that one of them might be the provider's event id. That was
+    wrong in a way worth naming: a coincidentally-named field would have been promoted
+    to a *provider* identity with STRONG confidence, enabling sequence gap detection
+    over a value the provider never meant as a sequence. Upstox V3 is now known to
+    supply neither field, so the guessing has no upside and a silent, severe downside.
 
-    The soak's job is to replace this speculative key list with the observed one.
+    Only explicitly-named provider fields are read. `None` is the expected outcome for
+    Upstox and degrades identity to the OI Pulse-derived digest, which is recorded.
+
+    `venue_timestamp` is still read from the documented exchange-timestamp keys: a
+    provider timestamp is preserved where genuinely supplied, and it is a *timestamp*,
+    never an identity or an ordering authority.
     """
-    event_id = None
-    for key in ("event_id", "eventId", "id", "msg_id", "messageId"):
-        value = message.get(key)
-        if value:
-            event_id = str(value)
-            break
+    raw_event_id = message.get("provider_event_id")
+    event_id = str(raw_event_id) if raw_event_id else None
 
-    sequence = None
-    for key in ("sequence", "seq", "sequence_number", "sequenceNumber", "channel_seq"):
-        value = message.get(key)
-        if isinstance(value, int):
-            sequence = value
-            break
+    raw_sequence = message.get("channel_sequence")
+    sequence = raw_sequence if isinstance(raw_sequence, int) else None
 
     timestamp = None
-    for key in ("ts", "timestamp", "exchange_timestamp", "feed_time", "et"):
+    for key in ("exchange_timestamp", "feed_time", "ts"):
         value = message.get(key)
         if value:
             timestamp = value
