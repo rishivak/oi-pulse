@@ -24,7 +24,16 @@ from __future__ import annotations
 import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
 
-__all__ = ["METADATA", "chain_snapshots", "obs_greeks", "obs_historical_oi", "obs_quotes"]
+__all__ = [
+    "METADATA",
+    "chain_snapshots",
+    "obs_depth",
+    "obs_greeks",
+    "obs_historical_oi",
+    "obs_index",
+    "obs_ohlc",
+    "obs_quotes",
+]
 
 METADATA = sa.MetaData()
 
@@ -71,9 +80,18 @@ def _identity_indexes(table: str) -> list[sa.Index]:
     applies depends on what the provider actually supplied for that row.
     """
     return [
+        # A-13: scoped by feed session. Whether an Upstox event id is globally unique
+        # or restarts per session is unverified, and the failure modes are asymmetric —
+        # not scoping, when ids are session-scoped, silently discards live data.
+        #
+        # COALESCE because Postgres treats NULLs as distinct in a unique index by
+        # default: REST rows carry no session, so two genuine duplicates would both be
+        # admitted without it. (`NULLS NOT DISTINCT` needs PG15+; COALESCE works
+        # everywhere and states the intent at the index.)
         sa.Index(
             f"uq_{table}_provider_event",
             "provider_event_id",
+            sa.text("COALESCE(feed_session_id, '')"),
             unique=True,
             postgresql_where=sa.text("provider_event_id IS NOT NULL"),
         ),
@@ -157,6 +175,58 @@ obs_historical_oi = sa.Table(
     sa.CheckConstraint("valid_to > valid_from", name="ck_hist_oi_interval"),
     sa.CheckConstraint("oi IS NULL OR oi >= 0", name="ck_hist_oi_non_negative"),
     *_identity_indexes("obs_historical_oi"),
+)
+
+
+# --------------------------------------------------------------------------------
+# The remaining observation kinds. `02-DATA_MODEL.md` §3 lists these as siblings of
+# obs_quotes; each canonical observation dataclass has a table, so a kind cannot be
+# produced by the normalizer with nowhere to land.
+#
+# Retention differs by kind (`02` §9): depth is high-volume and low research value
+# (90 days), while OHLC, index and historical OI are monthly-partitioned and kept.
+# --------------------------------------------------------------------------------
+
+obs_depth = sa.Table(
+    "obs_depth",
+    METADATA,
+    *_identity_columns(),
+    # JSONB rather than a levels table: depth is written and read whole, never joined
+    # level-by-level, and a row-per-level design would multiply the highest-volume
+    # table in the system by its depth count.
+    sa.Column("bids", postgresql.JSONB, nullable=False, server_default=sa.text("'[]'::jsonb")),
+    sa.Column("asks", postgresql.JSONB, nullable=False, server_default=sa.text("'[]'::jsonb")),
+    sa.Column("level_count", sa.Integer),
+    *_identity_indexes("obs_depth"),
+    postgresql_partition_by="RANGE (observed_at)",
+)
+
+obs_ohlc = sa.Table(
+    "obs_ohlc",
+    METADATA,
+    *_identity_columns(),
+    sa.Column("interval", sa.Text, nullable=False),
+    sa.Column("open", sa.Numeric(18, 4)),
+    sa.Column("high", sa.Numeric(18, 4)),
+    sa.Column("low", sa.Numeric(18, 4)),
+    sa.Column("close", sa.Numeric(18, 4)),
+    sa.Column("volume", sa.BigInteger),
+    sa.Column("oi", sa.BigInteger),
+    sa.CheckConstraint("high IS NULL OR low IS NULL OR high >= low", name="ck_obs_ohlc_high_low"),
+    sa.CheckConstraint("volume IS NULL OR volume >= 0", name="ck_obs_ohlc_volume"),
+    *_identity_indexes("obs_ohlc"),
+)
+
+obs_index = sa.Table(
+    "obs_index",
+    METADATA,
+    *_identity_columns(),
+    sa.Column("ltp", sa.Numeric(18, 4)),
+    sa.Column("prev_close", sa.Numeric(18, 4)),
+    sa.Column("open", sa.Numeric(18, 4)),
+    sa.Column("high", sa.Numeric(18, 4)),
+    sa.Column("low", sa.Numeric(18, 4)),
+    *_identity_indexes("obs_index"),
 )
 
 chain_snapshots = sa.Table(

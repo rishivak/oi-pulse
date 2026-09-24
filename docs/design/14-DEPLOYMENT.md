@@ -10,13 +10,22 @@
 One image, one codebase; the role is selected at startup.
 
 ```bash
-python -m platform.run --role api
-python -m platform.run --role ingestor
-python -m platform.run --role processor
-python -m platform.run --role trader     # feature-flagged, off by default
-python -m platform.run --role jobs
-python -m platform.run --role all        # development convenience
+python -m oipulse.run --role api
+python -m oipulse.run --role ingestor      # runtime lands in Phase 2
+python -m oipulse.run --role processor     # Phase 3
+python -m oipulse.run --role trader        # Phase 8+; live execution stays disabled
+python -m oipulse.run --role jobs          # Phase 2
+python -m oipulse.run --role all           # development convenience
+
+# Validate configuration without starting anything. Works on an interpreter with no
+# web stack installed, so an operator can check a deployment before it takes traffic.
+python -m oipulse.run --role api --check
 ```
+
+The package is `oipulse`, not `platform` (AD-28): `platform` is a Python standard-library
+module, and a top-level package of that name shadows it process-wide. A role whose
+runtime belongs to a later phase exits non-zero with the phase named, rather than
+starting a process that does nothing.
 
 | Role | Responsibility | Scaling | Stateful? |
 |---|---|---|---|
@@ -78,8 +87,16 @@ identity-keyed writes**, so a lock failure degrades efficiency rather than data 
 
 ## 3. Configuration
 
-`pydantic-settings`, environment-sourced, validated at startup. The process **refuses to
-start** on invalid configuration rather than failing later.
+Environment-sourced, validated at startup. The process **refuses to start** on invalid
+configuration rather than failing later, and every problem is reported together so an
+operator does not fix one variable, restart, and discover the next.
+
+Configuration lives in `oipulse.core.config` and is **stdlib-only** (AD-29).
+`oipulse.core` carries zero third-party dependencies because it is imported by every
+layer including `analytics/*`, which the boundary contract forbids from importing a
+settings library, a DB driver or an HTTP client; a dependency here would leak
+transitively into exactly the layer that must not have one. `pydantic` remains
+appropriate at the API edge for request models, where no such constraint applies.
 
 | Group | Keys |
 |---|---|

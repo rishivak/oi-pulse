@@ -20,7 +20,9 @@ dev = [
   "pytest==8.3.3",
   "pytest-asyncio==0.24.0",
   "ruff==0.16.5",
-  "mypy==1.11.2",
+  # >=1.12 for PEP 695 type parameters (`class Foo[T]`), which ruff UP046
+  # requires on py312 and which 1.11 cannot parse.
+  "mypy==1.13.0",
   "import-linter==2.1",
 ]
 
@@ -57,33 +59,70 @@ python_version = "3.12"
 packages = ["oipulse"]
 strict = true
 warn_unreachable = true
+# Migrations are Alembic-generated shapes with op.* calls that carry no useful types,
+# and they are validated by tools/check_migration_chain.py and check_schema_parity.py
+# instead.
 exclude = ["oipulse/migrations/"]
 
 [[tool.mypy.overrides]]
-module = ["alembic.*", "fastapi.*"]
+# Third-party packages without bundled stubs. Listed individually rather than with a
+# global ignore_missing_imports, so a genuinely missing internal module still errors.
+module = ["alembic.*", "uvicorn.*", "websockets.*"]
 ignore_missing_imports = true
 
 # --------------------------------------------------------- import-linter
-# Mirrors tools/check_import_boundaries.py. Both run in CI: the stdlib guard needs no
-# install and therefore cannot be skipped, while import-linter gives richer layering
-# analysis once dependencies are present. Redundancy is deliberate — the boundary
-# contract is the one thing that must not be silently disabled.
+# Internal layering only.
+#
+# Third-party bans (`core` must not import sqlalchemy/pydantic, `analytics` must not
+# import a DB driver or HTTP client) are enforced by tools/check_import_boundaries.py
+# rather than here: import-linter has to build a grimp graph of every module it names,
+# so forbidding external packages means importing and walking them, which is slow and
+# fails outright when the package is absent. The stdlib guard needs no install, so the
+# boundary contract cannot be disabled by a dependency problem — which is the property
+# that matters most for the rule that keeps the architecture honest.
 [tool.importlinter]
 root_package = "oipulse"
+exclude_type_checking_imports = true
 
 [[tool.importlinter.contracts]]
-name = "Layers point downward only"
+name = "Dependencies point downward only"
 type = "layers"
+exhaustive = false
+# Verified against the actual import graph, not aspiration:
+#   run -> api, core, observability
+#   api -> core, observability
+#   marketdata -> core, dataquality, instruments, observability, persistence
+#   dataquality | events | instruments | observability | persistence -> core
+# `api` and `marketdata` sit in one layer as independent siblings: neither imports the
+# other, and pinning an order between them would invent a constraint the design does
+# not make.
 layers = [
-  "oipulse.api",
-  "oipulse.events",
-  "oipulse.persistence",
-  "oipulse.observability",
-  "oipulse.core",
+    "oipulse.run",
+    "oipulse.api : oipulse.marketdata",
+    "oipulse.dataquality : oipulse.events : oipulse.instruments : oipulse.observability : oipulse.persistence",
+    "oipulse.core",
 ]
 
 [[tool.importlinter.contracts]]
-name = "core is dependency-free"
+name = "core depends on nothing internal"
 type = "forbidden"
 source_modules = ["oipulse.core"]
-forbidden_modules = ["sqlalchemy", "fastapi", "redis", "httpx", "pydantic"]
+forbidden_modules = [
+    "oipulse.api",
+    "oipulse.dataquality",
+    "oipulse.events",
+    "oipulse.instruments",
+    "oipulse.marketdata",
+    "oipulse.observability",
+    "oipulse.persistence",
+    "oipulse.run",
+]
+
+# NOTE: there is deliberately no import-linter contract for `oipulse.analytics`.
+# import-linter resolves every module it names against the real import graph and errors
+# out when one is absent, so a contract for a package that arrives in Phase 4 would make
+# `lint-imports` fail today. The analytics purity rule is armed *now* in
+# tools/check_import_boundaries.py, which is AST-based and does not require the package
+# to exist — so the rule is live before the code it governs, which is the point of
+# arming contracts early. Phase 4 adds the matching import-linter contract alongside the
+# package.

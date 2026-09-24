@@ -97,9 +97,28 @@ class ObservationIdentity:
 
     @property
     def dedup_key(self) -> tuple[str, ...]:
-        """The tuple a storage layer must make unique for this tier."""
+        """The tuple a storage layer must make unique for this tier.
+
+        **Tier 1 is scoped by feed session (A-13).** Whether an Upstox event id is
+        globally unique or restarts per session is unverified. The two mistakes are not
+        symmetric:
+
+        * Scoping when ids are global: at worst a genuine cross-session repeat of the
+          same id is stored twice. Visible, and recoverable by reconciliation.
+        * Not scoping when ids are session-scoped: the second session's events collide
+          with the first's and are **silently discarded as duplicates** — live market
+          data lost, with no error and no gap recorded.
+
+        The second is silent and destructive, so the identity is scoped until the soak
+        settles A-13. `provider_event_id` is still preserved in full on the row; only
+        the uniqueness key includes the session.
+        """
         if self.tier is IdentityTier.PROVIDER_EVENT_ID:
-            return ("provider_event_id", str(self.provider_event_id))
+            return (
+                "provider_event_id",
+                str(self.feed_session_id),  # None for REST, which has no session
+                str(self.provider_event_id),
+            )
         if self.tier is IdentityTier.FEED_SEQUENCE:
             return (
                 "feed_sequence",
@@ -111,8 +130,15 @@ class ObservationIdentity:
 
     @property
     def is_session_scoped(self) -> bool:
-        """True when ordering information is valid only inside one feed session."""
-        return self.tier is IdentityTier.FEED_SEQUENCE
+        """True when this identity is only meaningful inside one feed session.
+
+        Both live tiers are: sequences reset on reconnect (constraint C), and event-id
+        scope is unverified (A-13), so both are keyed with the session.
+        """
+        return (
+            self.tier in (IdentityTier.FEED_SEQUENCE, IdentityTier.PROVIDER_EVENT_ID)
+            and self.feed_session_id is not None
+        )
 
 
 def resolve_identity(

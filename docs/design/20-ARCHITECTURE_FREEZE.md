@@ -314,7 +314,7 @@ blocks Phase 1.
 | A-9 | Broker order-history endpoints are sufficient for full reconciliation | Phase 10 | Reconciliation would need position-level inference; live trading delayed |
 | A-10 | Single `processor` handles all underlyings within checkpoint cadence | Phase 3 load test | Shard earlier than planned |
 | A-11 | Postgres partitioning suffices at target volume | Phase 3–6 measurement | Revisit AD-16 against its stated thresholds |
-| A-13 | **Provider event-id scope: global or per-feed-session?** Tier-1 identity is `provider_event_id` alone. If ids are session-scoped, a reconnect will silently discard live data as duplicates — surfaced by the Phase 2 offline soak | Phase 2 external soak: capture two sessions' raw frames and compare event ids | If session-scoped, tier 1 must include `feed_session_id`; until settled, the risk is recorded and pinned by a test rather than assumed away |
+| A-13 | **Provider event-id scope: global or per-feed-session?** Still unresolved. Tier-1 identity is now **scoped by `feed_session_id`**, chosen because the failure modes are asymmetric: scoping a globally-unique id at worst stores a genuine repeat twice (visible), while not scoping a session-scoped id silently discards live data (invisible). `provider_event_id` is preserved in full on every row regardless | Phase 2 external soak: capture two sessions' raw frames and compare event ids | If ids prove globally unique, the session component can be dropped from the uniqueness key — a narrowing change, safe to make later. Pinned by `test_cross_session_event_ids_do_not_collide` |
 | A-12 | One user for the foreseeable future | Product decision | Multi-tenant isolation moves forward; `/offline-session` stays deleted regardless |
 
 ---

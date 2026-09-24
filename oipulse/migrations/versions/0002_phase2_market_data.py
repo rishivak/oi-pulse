@@ -53,7 +53,7 @@ depends_on = None
 #: whose collection starts outside the default window.
 _PARTITION_ANCHOR = date(2026, 1, 1)
 _INITIAL_PARTITION_DAYS = 120
-_PARTITIONED = ("obs_quotes", "obs_greeks")
+_PARTITIONED = ("obs_quotes", "obs_greeks", "obs_depth")
 
 
 def _partition_anchor() -> date:
@@ -96,10 +96,18 @@ def _create_identity_indexes(table: str, partitioned: bool) -> None:
     """
     suffix = ["observed_at"] if partitioned else []
 
+    # A-13: scoped by feed session. Whether an Upstox event id is globally unique
+    # or restarts per session is unverified, and the failure modes are asymmetric —
+    # not scoping, when ids are session-scoped, silently discards live data.
+    #
+    # COALESCE because Postgres treats NULLs as distinct in a unique index by
+    # default: REST rows carry no session, so two genuine duplicates would both be
+    # admitted without it. (`NULLS NOT DISTINCT` needs PG15+; COALESCE works
+    # everywhere and states the intent at the index.)
     op.create_index(
         f"uq_{table}_provider_event",
         table,
-        ["provider_event_id", *suffix],
+        ["provider_event_id", sa.text("COALESCE(feed_session_id, '')"), *suffix],
         unique=True,
         postgresql_where=sa.text("provider_event_id IS NOT NULL"),
     )
@@ -137,17 +145,20 @@ def _create_daily_partitions(table: str, start: date, days: int) -> None:
 
 def upgrade() -> None:
     # ---------------------------------------------------------------- instruments
+    # Identity only. Contract attributes that *define* an instrument live in the
+    # subtype tables below (`02-DATA_MODEL.md` §2); metadata that merely *describes*
+    # it lives in instrument_versions. Carrying strike/option_type here would make
+    # the identity row differ per instrument kind and put nullable columns on the
+    # one table that must be uniform.
     op.create_table(
         "instrument_instruments",
         sa.Column("id", sa.BigInteger, sa.Identity(), primary_key=True),
         sa.Column("instrument_type", sa.Text, nullable=False),
-        sa.Column("underlying_id", sa.BigInteger, sa.ForeignKey("instrument_instruments.id")),
-        sa.Column("expiry_id", sa.BigInteger),
-        sa.Column("strike", sa.Numeric(18, 4)),
-        sa.Column("option_type", sa.Text),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("now()")),
-        sa.CheckConstraint("strike IS NULL OR strike > 0", name="ck_instrument_strike_positive"),
-        sa.CheckConstraint("option_type IS NULL OR option_type IN ('CE','PE')", name="ck_instrument_option_type"),
+        sa.CheckConstraint(
+            "instrument_type IN ('index','equity','future','option')",
+            name="ck_instrument_type",
+        ),
     )
 
     op.create_table(
@@ -160,9 +171,46 @@ def upgrade() -> None:
         sa.Column("is_active", sa.Boolean, nullable=False, server_default=sa.true()),
         sa.UniqueConstraint("underlying_id", "expiry_date", name="uq_instrument_expiry"),
     )
-    op.create_foreign_key(
-        "fk_instrument_expiry", "instrument_instruments", "instrument_expiries",
-        ["expiry_id"], ["id"],
+
+    # Option and future contracts. Separate tables rather than nullable columns on the
+    # identity row, per the 02 §2 ERD: a strike is not an optional property of every
+    # instrument, it is what makes an option that option.
+    op.create_table(
+        "instrument_options",
+        sa.Column(
+            "instrument_id",
+            sa.BigInteger,
+            sa.ForeignKey("instrument_instruments.id"),
+            primary_key=True,
+        ),
+        sa.Column("underlying_id", sa.BigInteger, sa.ForeignKey("instrument_instruments.id"), nullable=False),
+        sa.Column("expiry_id", sa.BigInteger, sa.ForeignKey("instrument_expiries.id"), nullable=False),
+        sa.Column("strike", sa.Numeric(18, 4), nullable=False),
+        sa.Column("option_type", sa.Text, nullable=False),
+        sa.CheckConstraint("strike > 0", name="ck_instrument_option_strike_positive"),
+        sa.CheckConstraint("option_type IN ('CE','PE')", name="ck_instrument_option_type"),
+        sa.UniqueConstraint(
+            "underlying_id", "expiry_id", "strike", "option_type",
+            name="uq_instrument_option_contract",
+        ),
+    )
+    op.create_index(
+        "ix_instrument_options_chain", "instrument_options",
+        ["underlying_id", "expiry_id", "strike"],
+    )
+
+    op.create_table(
+        "instrument_futures",
+        sa.Column(
+            "instrument_id",
+            sa.BigInteger,
+            sa.ForeignKey("instrument_instruments.id"),
+            primary_key=True,
+        ),
+        sa.Column("underlying_id", sa.BigInteger, sa.ForeignKey("instrument_instruments.id"), nullable=False),
+        sa.Column("expiry_id", sa.BigInteger, sa.ForeignKey("instrument_expiries.id"), nullable=False),
+        sa.Column("contract_month", sa.Text),
+        sa.UniqueConstraint("underlying_id", "expiry_id", name="uq_instrument_future_contract"),
     )
 
     op.create_table(
@@ -259,6 +307,51 @@ def upgrade() -> None:
         _create_daily_partitions(table, anchor, _INITIAL_PARTITION_DAYS)
         _create_identity_indexes(table, partitioned=True)
 
+    # Depth is partitioned daily alongside quotes and greeks: same volume profile.
+    # JSONB levels rather than a row per level — depth is written and read whole.
+    op.create_table(
+        "obs_depth",
+        *_identity_columns(),
+        sa.Column("bids", postgresql.JSONB, nullable=False, server_default=sa.text("'[]'::jsonb")),
+        sa.Column("asks", postgresql.JSONB, nullable=False, server_default=sa.text("'[]'::jsonb")),
+        sa.Column("level_count", sa.Integer),
+        sa.PrimaryKeyConstraint("id", "observed_at"),
+        postgresql_partition_by="RANGE (observed_at)",
+    )
+    _create_daily_partitions("obs_depth", _partition_anchor(), _INITIAL_PARTITION_DAYS)
+    _create_identity_indexes("obs_depth", partitioned=True)
+
+    # OHLC and index are monthly in the design (`02` §9) and low volume here, so they
+    # are created unpartitioned in Phase 2. Partitioning them is a forward migration
+    # when volume justifies it, not a guess made now.
+    op.create_table(
+        "obs_ohlc",
+        *_identity_columns(),
+        sa.Column("interval", sa.Text, nullable=False),
+        sa.Column("open", sa.Numeric(18, 4)),
+        sa.Column("high", sa.Numeric(18, 4)),
+        sa.Column("low", sa.Numeric(18, 4)),
+        sa.Column("close", sa.Numeric(18, 4)),
+        sa.Column("volume", sa.BigInteger),
+        sa.Column("oi", sa.BigInteger),
+        sa.PrimaryKeyConstraint("id"),
+        sa.CheckConstraint("high IS NULL OR low IS NULL OR high >= low", name="ck_obs_ohlc_high_low"),
+        sa.CheckConstraint("volume IS NULL OR volume >= 0", name="ck_obs_ohlc_volume"),
+    )
+    _create_identity_indexes("obs_ohlc", partitioned=False)
+
+    op.create_table(
+        "obs_index",
+        *_identity_columns(),
+        sa.Column("ltp", sa.Numeric(18, 4)),
+        sa.Column("prev_close", sa.Numeric(18, 4)),
+        sa.Column("open", sa.Numeric(18, 4)),
+        sa.Column("high", sa.Numeric(18, 4)),
+        sa.Column("low", sa.Numeric(18, 4)),
+        sa.PrimaryKeyConstraint("id"),
+    )
+    _create_identity_indexes("obs_index", partitioned=False)
+
     op.create_table(
         "obs_historical_oi",
         *_identity_columns(),
@@ -328,12 +421,17 @@ def downgrade() -> None:
     op.drop_index("ix_chain_snapshots_lookup", table_name="chain_snapshots")
     op.drop_table("chain_snapshots")
     op.drop_table("obs_historical_oi")
-    op.drop_table("obs_greeks")  # partitions drop with the parent
+    op.drop_table("obs_index")
+    op.drop_table("obs_ohlc")
+    op.drop_table("obs_depth")  # partitions drop with the parent
+    op.drop_table("obs_greeks")
     op.drop_table("obs_quotes")
     op.drop_table("instrument_universes")
     op.drop_index("ix_vendor_mapping_lookup", table_name="instrument_vendor_mappings")
     op.drop_table("instrument_vendor_mappings")
     op.drop_table("instrument_versions")
-    op.drop_constraint("fk_instrument_expiry", "instrument_instruments", type_="foreignkey")
+    op.drop_table("instrument_futures")
+    op.drop_index("ix_instrument_options_chain", table_name="instrument_options")
+    op.drop_table("instrument_options")
     op.drop_table("instrument_expiries")
     op.drop_table("instrument_instruments")

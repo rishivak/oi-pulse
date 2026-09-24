@@ -25,6 +25,7 @@ the data-quality surface can say what coverage actually means.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from enum import StrEnum
@@ -147,7 +148,7 @@ class SessionManager:
         clock: Clock,
         *,
         heartbeat_budget: timedelta = timedelta(seconds=10),
-        session_id_factory=None,
+        session_id_factory: Callable[[], str] | None = None,
     ) -> None:
         self._clock = clock
         self._heartbeat_budget = heartbeat_budget
@@ -156,6 +157,7 @@ class SessionManager:
         self._sessions: list[FeedSession] = []
         self._current: FeedSession | None = None
         self._gaps: list[GapRecord] = []
+        self._drained = 0
         self._session_id_factory = session_id_factory or self._default_session_id
 
     # ------------------------------------------------------------- state machine
@@ -189,6 +191,18 @@ class SessionManager:
     @property
     def gaps(self) -> tuple[GapRecord, ...]:
         return tuple(self._gaps)
+
+    def drain_new_gaps(self) -> tuple[GapRecord, ...]:
+        """Gaps detected since the last drain.
+
+        The collector consumes gaps exactly once so a single discontinuity triggers a
+        single recovery. `gaps` remains the full permanent record — draining marks
+        gaps as *handled*, never as forgotten, because the window must stay queryable
+        for research long after recovery completed.
+        """
+        new = self._gaps[self._drained :]
+        self._drained = len(self._gaps)
+        return tuple(new)
 
     def open_session(self) -> FeedSession:
         """Begin a new feed session, recording the outage window if one preceded it."""

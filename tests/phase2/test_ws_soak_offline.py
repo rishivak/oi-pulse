@@ -220,33 +220,36 @@ class TestWebSocketSoakOffline(unittest.TestCase):
         r = run_soak(with_identity=True)
         self.assertEqual(r.websocket_gaps, 1, "only the in-session gap, not the restart")
 
-    def test_event_id_scope_is_an_open_provider_question(self):
-        """Pins a real ambiguity the offline soak exposed, for the external run to settle.
+    def test_cross_session_event_ids_do_not_collide(self):
+        """A-13: identical event ids in two sessions must not deduplicate each other.
 
         The synthetic feed restarts its event ids at `evt-000001` in the second session.
-        Tier-1 identity is `provider_event_id` alone, so those repeats deduplicate
-        against session 1 — 12 observations suppressed in the with-identity branch.
+        Before remediation, tier-1 identity was `provider_event_id` alone, so those
+        repeats were silently discarded as duplicates — 12 observations lost across the
+        reconnect, with no error and no gap recorded.
 
-        Whether that is correct depends on a fact we do not have: **is an Upstox event id
-        globally unique, or scoped to a feed session?**
-
-        * Globally unique  -> tier 1 as-is is right, and the synthetic fixture is simply
-          unrealistic.
-        * Session-scoped   -> tier 1 must include `feed_session_id`, or a reconnect will
-          silently discard live data as "duplicates".
-
-        The second failure mode is silent and destructive, so this is recorded as an
-        explicit assumption rather than resolved by guessing. The external soak must
-        capture two sessions' raw frames and compare their event ids.
+        Whether Upstox event ids are globally unique or session-scoped is still
+        **unresolved** (A-13). The identity is scoped by feed session because the two
+        mistakes are not symmetric: scoping a globally-unique id at worst stores a
+        genuine repeat twice, which is visible; not scoping a session-scoped id loses
+        live market data, silently. The soak must settle it by capturing two sessions'
+        raw frames and comparing their ids.
         """
         strong = run_soak(with_identity=True)
         weak = run_soak(with_identity=False)
-        # Current behaviour, pinned so a change to identity scoping is visible in CI.
-        self.assertGreater(
-            strong.duplicates_suppressed,
-            weak.duplicates_suppressed,
-            "tier-1 identity currently dedups across sessions; see docstring",
+
+        # Both sessions' observations survive: 16 frames x 2 observations, minus the
+        # 2 suppressed by the deliberately-replayed REST recovery.
+        self.assertEqual(strong.duplicates_suppressed, weak.duplicates_suppressed)
+        self.assertEqual(
+            strong.observations_written,
+            weak.observations_written,
+            "session-scoped identity must not discard the second session's events",
         )
+
+    def test_real_duplicates_are_still_suppressed(self):
+        """Scoping must not disable dedup: the replayed REST recovery is still caught."""
+        self.assertGreater(run_soak(with_identity=True).duplicates_suppressed, 0)
 
     def test_soak_is_deterministic(self):
         self.assertEqual(

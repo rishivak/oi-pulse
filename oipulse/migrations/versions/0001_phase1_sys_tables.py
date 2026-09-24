@@ -15,7 +15,16 @@ Three invariants are expressed as constraints rather than conventions:
   silently break the audit chain (`02-DATA_MODEL.md` §8).
 
 Revision ID: 0001_phase1_sys_tables
-Revises:
+Revises: 002 (the legacy backend chain head)
+
+**Why this chains off a legacy revision.** The live database is at
+`alembic_version = '002'` from `backend/alembic` (001 -> 002), and both chains share the
+default `alembic_version` table. Starting the v2 chain at `down_revision = None` created
+a second root, so Alembic could not locate '002' and every upgrade failed.
+
+Continuing from '002' gives one linear history for both a fresh database and the existing
+one, preserves all legacy data, and needs no manual edit of `alembic_version`. Legacy
+tables are left untouched — AD-20 keeps the legacy application running until cutover.
 """
 
 from __future__ import annotations
@@ -25,7 +34,8 @@ from alembic import op
 from sqlalchemy.dialects import postgresql
 
 revision = "0001_phase1_sys_tables"
-down_revision = None
+#: The legacy backend chain head. See the module docstring.
+down_revision = "002"
 branch_labels = None
 depends_on = None
 

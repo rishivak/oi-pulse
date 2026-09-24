@@ -42,6 +42,9 @@ class Contract:
     forbidden_modules: frozenset[str] = field(default_factory=frozenset)
     #: Third-party roots the subject may never import.
     forbidden_external: frozenset[str] = field(default_factory=frozenset)
+    #: Module keys allowed to violate this contract, each with a stated reason.
+    #: Kept deliberately small: an exemption list that grows is a contract dissolving.
+    exempt: frozenset[str] = field(default_factory=frozenset)
     rationale: str = ""
 
 
@@ -77,9 +80,15 @@ CONTRACTS: tuple[Contract, ...] = (
         name="nothing-imports-api",
         subject="*",
         forbidden=frozenset({"api"}),
+        # `run` is the composition root: its whole job is to wire the outermost layer
+        # to a validated configuration. Every layered design needs exactly one module
+        # that may see the top, and naming it here keeps that privilege visible
+        # instead of letting the contract quietly weaken.
+        exempt=frozenset({"run"}),
         rationale=(
             "api/ is the outermost layer. Anything importing it has inverted the "
-            "dependency direction (00-OVERVIEW.md §5)."
+            "dependency direction (00-OVERVIEW.md §5). Only the composition root "
+            "(oipulse/run.py) is exempt."
         ),
     ),
     Contract(
@@ -164,12 +173,20 @@ def check(root: Path) -> list[str]:
         for contract in CONTRACTS:
             if not _matches_subject(module_key, contract.subject):
                 continue
+            if module_key in contract.exempt or module_key.split(".")[0] in contract.exempt:
+                continue
+
+            # A module's own top-level package. Under the wildcard subject there is no
+            # declared subject to compare against, so self-imports must be recognised
+            # from the importer itself or `api.app` importing `api.health` is flagged.
+            own_top = module_key.split(".")[0]
+
             for lineno, imported in imports:
                 internal = _subpackage_of(imported)
                 external_root = imported.split(".")[0]
 
                 if internal is not None:
-                    own = contract.subject if contract.subject != "*" else None
+                    own = contract.subject if contract.subject != "*" else own_top
                     if own and _violates_target(internal, own):
                         continue  # a package may import itself
                     top = internal.split(".")[0]

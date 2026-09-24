@@ -43,6 +43,12 @@ jobs:
       - name: No unbounded repository reads
         run: python tools/check_temporal_repository.py oipulse
 
+      - name: Single alembic chain, one head
+        run: python tools/check_migration_chain.py
+
+      - name: Schema parity (observation kinds <-> tables <-> migrations)
+        run: python tools/check_schema_parity.py
+
       - name: Foundation tests (stdlib only)
         run: python -m unittest discover -s tests -t . -v
 
@@ -61,13 +67,15 @@ jobs:
   typecheck:
     name: Type check
     runs-on: ubuntu-latest
-    continue-on-error: true # advisory until Phase 2 lands the typed storage layer
+    # Required. It was advisory during Phase 1 and that hid real errors; strict mypy
+    # now blocks the merge. mypy 1.13 is the floor because PEP 695 type parameters
+    # (`class Foo[T]`) — which ruff UP046 requires on py312 — cannot be parsed by 1.11.
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip install mypy==1.11.2
+      - run: pip install -e ".[dev]"
       - run: mypy
 
   contracts:
@@ -78,7 +86,9 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip install import-linter==2.1
+      # Installed with the package: import-linter resolves every module it names
+      # against the real import graph, so the package must be importable.
+      - run: pip install -e ".[dev]"
       # Redundant with tools/check_import_boundaries.py by design: the stdlib guard
       # cannot be skipped, import-linter gives richer layering analysis. The boundary
       # contract is the one thing that must not be silently disabled.

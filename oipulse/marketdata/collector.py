@@ -23,18 +23,18 @@ Ordering of operations is deliberate:
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 from oipulse.core.clock import Clock
 from oipulse.core.errors import OIPulseError
 from oipulse.dataquality.issues import IssueSeverity, IssueType, QualityIssue
 from oipulse.instruments.universe import DataMode
-from oipulse.marketdata.lifecycle import SessionManager
+from oipulse.marketdata.lifecycle import GapRecord, SessionManager
 from oipulse.marketdata.observations import MarketObservation
 from oipulse.marketdata.ratelimit import RateLimitGovernor
-from oipulse.marketdata.recovery import plan_recovery
+from oipulse.marketdata.recovery import RecoveryPlan, plan_recovery
 from oipulse.marketdata.subscription import (
     CapacityResult,
     CapacityVerdict,
@@ -43,6 +43,7 @@ from oipulse.marketdata.subscription import (
 )
 from oipulse.observability.logging import get_logger
 from oipulse.observability.metrics import (
+    DQ_ISSUES,
     INGESTION_LATENCY,
     METRICS,
     OBSERVATION_DUPLICATES,
@@ -69,6 +70,8 @@ class CollectorPlan:
     vendor_keys: tuple[str, ...]
     mode: DataMode
     chain_poll_interval: timedelta
+    underlying_ids: tuple[int, ...] = ()
+    expiry_ids: tuple[int, ...] = ()
     issues: tuple[QualityIssue, ...] = field(default_factory=tuple)
 
 
@@ -91,6 +94,7 @@ class CanonicalCollector:
         self._store = store
         self._provider = provider
         self._running = False
+        self._issues: list[QualityIssue] = []
 
     # -------------------------------------------------------------------- plan
 
@@ -100,6 +104,8 @@ class CanonicalCollector:
         vendor_keys: Sequence[str],
         mode: DataMode,
         chain_count: int,
+        underlying_ids: tuple[int, ...] = (),
+        expiry_ids: tuple[int, ...] = (),
     ) -> CollectorPlan:
         """Decide capacity **before** subscribing. Refuse if impossible."""
         capacity = self._planner.plan(request)
@@ -148,6 +154,8 @@ class CanonicalCollector:
             mode=mode,
             # Cadence derives from budget, so adding an expiry visibly costs cadence.
             chain_poll_interval=self._governor.chain_poll_interval(chain_count),
+            underlying_ids=underlying_ids,
+            expiry_ids=expiry_ids,
             issues=tuple(issues),
         )
 
@@ -174,19 +182,54 @@ class CanonicalCollector:
             METRICS.inc(OBSERVATION_DUPLICATES, by=result.duplicates)
         return result.inserted
 
-    async def recover_after_gap(self, gap, underlying_ids, expiry_ids) -> None:
-        """Out-of-band REST re-fetch. The gap window is recorded, never interpolated."""
+    async def recover_after_gap(
+        self,
+        gap: GapRecord,
+        underlying_ids: tuple[int, ...],
+        expiry_ids: tuple[int, ...],
+    ) -> RecoveryPlan:
+        """Out-of-band REST re-fetch. The gap window is recorded, never interpolated.
+
+        Two things happen and both matter: the chain is re-fetched *outside* the normal
+        poll cadence, so recovery is not queued behind routine polling while the state
+        is degraded; and the gap window is recorded permanently, because observations
+        inside it are absent, not zero.
+        """
         plan = plan_recovery(
             gap, clock=self._clock, underlying_ids=underlying_ids, expiry_ids=expiry_ids
         )
         log.warning(
             "recovery_triggered", extra={"trigger": plan.trigger.value, "detail": plan.detail}
         )
-        # The caller persists plan.issues; observations inside the gap are never invented.
+        for issue in plan.issues:
+            METRICS.inc(DQ_ISSUES, {"type": issue.type.value, "severity": issue.severity.value})
+        self._issues.extend(plan.issues)
+
+        if self._provider is not None and plan.out_of_band:
+            for expiry_id in plan.expiry_ids:
+                try:
+                    snapshot = await self._provider.fetch_recovery_chain(expiry_id)  # type: ignore[attr-defined]
+                except Exception as exc:
+                    log.error("recovery_fetch_failed", extra={"error": str(exc)[:200]})
+                    continue
+                # Idempotent: the recovery fetch and the resumed stream may cover the
+                # same instant, and the identity key absorbs the overlap.
+                self.persist(list(snapshot.legs))
+        return plan
+
+    @property
+    def issues(self) -> tuple[QualityIssue, ...]:
+        """Quality issues raised so far. Persisted by the caller into `dq_issues`."""
+        return tuple(self._issues)
+
+    def drain_issues(self) -> tuple[QualityIssue, ...]:
+        issues = tuple(self._issues)
+        self._issues.clear()
+        return issues
 
     # ------------------------------------------------------------------- loop
 
-    async def run(self, plan: CollectorPlan, session_is_open) -> None:
+    async def run(self, plan: CollectorPlan, session_is_open: Callable[[datetime], bool]) -> None:
         """Continuous collection during the market window.
 
         Requires a live provider, credentials and a database. `session_is_open` is a
@@ -207,6 +250,12 @@ class CanonicalCollector:
                     plan.vendor_keys, plan.mode.value
                 ):
                     self.persist([observation])
+
+                    # Any gap detected while consuming that frame triggers out-of-band
+                    # recovery immediately. Detecting a gap and not acting on it leaves
+                    # the state degraded for a whole poll interval.
+                    for gap in self._sessions.drain_new_gaps():
+                        await self.recover_after_gap(gap, plan.underlying_ids, plan.expiry_ids)
             except Exception as exc:
                 log.error("collector_stream_error", extra={"error": str(exc)[:200]})
                 await asyncio.sleep(1)

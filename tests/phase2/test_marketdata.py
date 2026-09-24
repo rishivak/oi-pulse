@@ -843,3 +843,75 @@ class TestRateLimitGovernance(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+# ------------------------------------------------- collector recovery wiring
+
+
+class TestCollectorRecovery(unittest.TestCase):
+    """Detecting a gap and not acting on it leaves the state degraded silently."""
+
+    def setUp(self):
+        from oipulse.marketdata.collector import CanonicalCollector
+
+        self.clock = _clock()
+        self.sessions = SessionManager(self.clock, session_id_factory=lambda: "s1")
+        self.store = InMemoryObservationStore()
+        self.collector = CanonicalCollector(
+            self.clock,
+            SubscriptionPlanner(),
+            RateLimitGovernor(self.clock),
+            self.sessions,
+            self.store,
+        )
+        for state in (
+            ConnectionState.CONNECTING,
+            ConnectionState.AUTHENTICATING,
+            ConnectionState.SUBSCRIBING,
+            ConnectionState.STREAMING,
+        ):
+            self.sessions.transition(state)
+        self.sessions.open_session()
+
+    def test_gaps_drain_exactly_once(self):
+        """One discontinuity must trigger one recovery, not one per subsequent frame."""
+        self.sessions.record_message("c", 1, IdentityConfidence.STRONG)
+        self.sessions.record_message("c", 5, IdentityConfidence.STRONG)
+        first = self.sessions.drain_new_gaps()
+        second = self.sessions.drain_new_gaps()
+        self.assertEqual(len(first), 1)
+        self.assertEqual(second, ())
+
+    def test_drained_gaps_remain_in_the_permanent_record(self):
+        """Draining marks a gap handled, never forgotten: research must still see it."""
+        self.sessions.record_message("c", 1, IdentityConfidence.STRONG)
+        self.sessions.record_message("c", 5, IdentityConfidence.STRONG)
+        self.sessions.drain_new_gaps()
+        self.assertEqual(len([g for g in self.sessions.gaps if g.kind is GapKind.WEBSOCKET_GAP]), 1)
+
+    def test_recovery_records_a_quality_issue(self):
+        import asyncio
+
+        self.sessions.record_message("c", 1, IdentityConfidence.STRONG)
+        self.sessions.record_message("c", 5, IdentityConfidence.STRONG)
+        gap = self.sessions.drain_new_gaps()[0]
+        plan = asyncio.run(self.collector.recover_after_gap(gap, (1,), (10,)))
+
+        self.assertEqual(plan.trigger, RecoveryTrigger.WEBSOCKET_GAP)
+        self.assertTrue(plan.out_of_band)
+        issues = self.collector.drain_issues()
+        self.assertEqual(len(issues), 1)
+        self.assertEqual(issues[0].type, IssueType.WEBSOCKET_GAP)
+        self.assertEqual(self.collector.drain_issues(), (), "issues drain once")
+
+    def test_plan_carries_the_scope_recovery_needs(self):
+        plan = self.collector.plan(
+            SubscriptionRequest({DataMode.GREEKS: (1, 2, 3)}),
+            ["k1", "k2", "k3"],
+            DataMode.GREEKS,
+            chain_count=2,
+            underlying_ids=(100,),
+            expiry_ids=(10, 11),
+        )
+        self.assertEqual(plan.underlying_ids, (100,))
+        self.assertEqual(plan.expiry_ids, (10, 11))

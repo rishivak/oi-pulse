@@ -9,7 +9,8 @@ stdlib-only so that `oipulse.core` carries *zero* third-party dependencies: `cor
 innermost layer, imported by `analytics/*`, which the boundary contract forbids from
 reaching a DB, HTTP client or settings library. Keeping `core` dependency-free makes that
 contract structural rather than aspirational. The validation semantics required by `14`
-are preserved exactly. Recorded as AD-28 in `19-DECISIONS.md`.
+are preserved exactly. Recorded as **AD-29** in `19-DECISIONS.md` (AD-28 is the
+separate `platform` -> `oipulse` package rename).
 """
 
 from __future__ import annotations
