@@ -22,7 +22,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from fastapi import APIRouter, Body, HTTPException, Query, Request, status
+from fastapi import APIRouter, Body, HTTPException, Query, Request, Response, status
 
 from oipulse.research.serialisation import (
     dataset_to_dict,
@@ -80,13 +80,18 @@ async def create_study(request: Request, body: dict[str, Any] = Body(...)) -> di
     return {"data": study_to_dict(study)}
 
 
-@router.delete("/studies/{study_id}/versions/{version}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_study(request: Request, study_id: str, version: int) -> None:
+@router.delete(
+    "/studies/{study_id}/versions/{version}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    response_class=Response,
+)
+async def delete_study(request: Request, study_id: str, version: int) -> Response:
     store = _store(request)
     if not store.delete_study(study_id, version):
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail=f"no study {study_id}@v{version}"
         )
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.post("/studies/{study_id}/run")

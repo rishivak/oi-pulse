@@ -84,12 +84,13 @@ def study(
     query_mode: QueryMode = QueryMode.KNOWLEDGE_AT,
     version: int = 1,
     period_end_minutes: int = 240,
+    question: str = "When put OI migrates above the threshold, what happens next?",
     **kwargs: object,
 ) -> EventStudy:
     return EventStudy(
         study_id="PUT_OI_SURGE_FORWARD",
         version=version,
-        question="When put OI migrates above the threshold, what happens next?",
+        question=question,
         event_definition=definition or surge_definition(),
         universe=Universe(underlying_ids=(UNDERLYING,)),
         period=StudyPeriod(BASE, at(period_end_minutes)),
