@@ -85,6 +85,16 @@ PHASE4_PARTITIONED = PHASE4_TABLES
 PHASE5_TABLES = ("signal_signals", "signal_evidence", "alert_rules", "alert_occurrences")
 PHASE5_PARTITIONED = ("signal_signals", "signal_evidence", "alert_occurrences")
 
+#: Phase 6 research tables (`0006_phase6_research`). Deliberately UNPARTITIONED:
+#: decision artifacts are immutable and retained forever (`02` §9), so partitioning
+#: them would imply a pruning story that must not exist for this data.
+PHASE6_TABLES = (
+    "research_studies",
+    "research_datasets",
+    "research_results",
+    "research_signal_evaluations",
+)
+
 
 def _tables(path: Path, function: str, call: str) -> list[str]:
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=path.name)
@@ -126,14 +136,15 @@ class TestMigrationChain(unittest.TestCase):
                 "0003_phase3_marketstate",
                 "0004_phase4_analytics",
                 "0005_phase5_signals",
+                "0006_phase6_research",
             ],
-            "the chain must run legacy -> Phase 1 -> 2 -> 3 -> 4 -> 5 with no branch",
+            "the chain must run legacy -> Phase 1 -> 2 -> 3 -> 4 -> 5 -> 6, no branch",
         )
 
     def test_exactly_one_head(self) -> None:
         downs = {rev.down_revision for rev in self.chain}
         heads = [rev.revision for rev in self.chain if rev.revision not in downs]
-        self.assertEqual(heads, ["0005_phase5_signals"])
+        self.assertEqual(heads, ["0006_phase6_research"])
 
     def test_upgrading_from_the_legacy_revision_reaches_phase_2(self) -> None:
         """A database stamped at `002` must have a path to head without manual edits."""
@@ -151,6 +162,7 @@ class TestMigrationChain(unittest.TestCase):
                 "0003_phase3_marketstate",
                 "0004_phase4_analytics",
                 "0005_phase5_signals",
+                "0006_phase6_research",
             ],
         )
 
@@ -279,6 +291,44 @@ class TestTableInventory(unittest.TestCase):
         # 'NONE_OBSERVED' is a positive finding, so the column cannot be NULL.
         self.assertIn('sa.Column("contradiction_assessment", sa.Text, nullable=False)', source)
 
+    def test_phase_6_creates_exactly_the_research_tables(self) -> None:
+        created = _tables(V2 / "0006_phase6_research.py", "upgrade", "create_table")
+        self.assertEqual(sorted(created), sorted(PHASE6_TABLES))
+        self.assertEqual(len(created), len(set(created)), "no table created twice")
+
+    def test_phase_6_content_hashes_are_unique(self) -> None:
+        """The reproducibility gate, enforced by the database.
+
+        A rebuild with the same parameters must reuse the row; a divergent one is
+        immediately visible as a new hash rather than silently accumulating.
+        """
+        source = (V2 / "0006_phase6_research.py").read_text(encoding="utf-8")
+        self.assertIn("uq_research_datasets_content", source)
+        self.assertIn("uq_research_results_content", source)
+        self.assertIn("uq_research_studies_identity", source)
+        # Insufficiency is a real status, so the column cannot be NULL.
+        self.assertIn('sa.Column("status", sa.Text, nullable=False)', source)
+        # Both event counts are stored, never just the raw one.
+        self.assertIn('"raw_events"', source)
+        self.assertIn('"effective_sample"', source)
+        self.assertIn('"comparisons"', source)
+
+    def test_phase_6_introduces_no_backtest_table(self) -> None:
+        """Phase 7 tables must not appear early.
+
+        Checks the tables actually created, not the word anywhere in the file: the
+        migration's own docstring says "no Phase 7 backtest table is created", and a
+        substring search would flag that disclaimer. The same distinction as the
+        Phase 4 directional-label check -- a statement that something is absent is
+        not an instance of it.
+        """
+        created = _tables(V2 / "0006_phase6_research.py", "upgrade", "create_table")
+        for table in created:
+            for banned in ("backtest", "replay", "paper_trade", "portfolio", "terminal"):
+                with self.subTest(table=table, banned=banned):
+                    self.assertNotIn(banned, table.lower())
+        self.assertTrue(all(t.startswith("research_") for t in created))
+
     def test_downgrade_mirrors_upgrade_in_all_revisions(self) -> None:
         """A downgrade that forgets a table leaves a schema the next upgrade cannot build."""
         for name in (
@@ -287,6 +337,7 @@ class TestTableInventory(unittest.TestCase):
             "0003_phase3_marketstate.py",
             "0004_phase4_analytics.py",
             "0005_phase5_signals.py",
+            "0006_phase6_research.py",
         ):
             with self.subTest(revision=name):
                 created = _tables(V2 / name, "upgrade", "create_table")
@@ -310,6 +361,7 @@ class TestTableInventory(unittest.TestCase):
             "0003_phase3_marketstate.py",
             "0004_phase4_analytics.py",
             "0005_phase5_signals.py",
+            "0006_phase6_research.py",
         ):
             source = (V2 / name).read_text(encoding="utf-8")
             for table in legacy:

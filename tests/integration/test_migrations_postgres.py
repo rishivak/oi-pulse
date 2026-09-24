@@ -159,6 +159,7 @@ class TestMigrationsApply(unittest.TestCase):
             PHASE3_TABLES,
             PHASE4_TABLES,
             PHASE5_TABLES,
+            PHASE6_TABLES,
         )
 
         self._upgrade_head()
@@ -169,6 +170,7 @@ class TestMigrationsApply(unittest.TestCase):
             *PHASE3_TABLES,
             *PHASE4_TABLES,
             *PHASE5_TABLES,
+            *PHASE6_TABLES,
         ):
             with self.subTest(table=table):
                 self.assertIn(table, present)
@@ -247,6 +249,7 @@ class TestMigrationsApply(unittest.TestCase):
             PHASE3_TABLES,
             PHASE4_TABLES,
             PHASE5_TABLES,
+            PHASE6_TABLES,
         )
 
         self._upgrade_head()
@@ -261,6 +264,7 @@ class TestMigrationsApply(unittest.TestCase):
             *PHASE3_TABLES,
             *PHASE4_TABLES,
             *PHASE5_TABLES,
+            *PHASE6_TABLES,
         ):
             with self.subTest(table=table):
                 self.assertNotIn(table, remaining, f"{table} survived the downgrade")
