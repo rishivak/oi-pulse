@@ -291,6 +291,18 @@ class Provenance:
     observation_refs: tuple[str, ...]
     assembled_at: datetime
     source_kinds: tuple[str, ...] = ()
+    #: The latest `ingested_at` across every observation that contributed to this
+    #: state — i.e. the moment OI Pulse actually held all of this state's inputs.
+    #:
+    #: Added for Phase 4. Feature availability is governed by **input readiness**, and
+    #: for a raw observation that readiness is `ingested_at`, never `observed_at`
+    #: (`07-ANALYTICS.md` §3). Without this on the state, an analytic could only see
+    #: `observed_at` and would compute an `available_at` that precedes the moment the
+    #: input existed — look-ahead inside the very mechanism built to prevent it.
+    #:
+    #: `None` when the state contains no observations at all, which is distinct from
+    #: "ready at the epoch" and must not be defaulted to a timestamp.
+    max_input_ingested_at: datetime | None = None
 
     @property
     def build_context_id(self) -> str:
