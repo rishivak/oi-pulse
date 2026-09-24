@@ -35,7 +35,7 @@ import asyncio
 import importlib.util
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Any, Protocol
+from typing import Any, Protocol, cast
 
 from oipulse.core.config import Settings
 from oipulse.observability.logging import get_logger
@@ -138,12 +138,27 @@ class _RedisLike(Protocol):
     async def aclose(self) -> None: ...
 
 
+#: The one signature this module relies on from redis-py's untyped constructor.
+_RedisFromUrl = Callable[[str], _RedisLike]
+
+
 def _redis_client(redis_url: str) -> _RedisLike:
-    """Typed boundary around the untyped `redis.asyncio.from_url` constructor."""
+    """Typed boundary around the untyped `redis.asyncio.from_url` constructor.
+
+    `from_url` carries no annotations, so calling it from a strict-checked module is a
+    `no-untyped-call` *regardless of how the result is annotated* -- the error is about
+    the call, not the assignment, which is why annotating the target did not silence
+    it. Casting the **callable** rather than the result confines the assertion to one
+    expression and writes down the exact signature we depend on, so a redis-py release
+    that types `from_url` incompatibly surfaces here instead of somewhere downstream.
+
+    `cast` is erased at runtime: the call is still `aioredis.from_url(redis_url)` with
+    the same single positional argument, so connection behaviour is unchanged.
+    """
     import redis.asyncio as aioredis
 
-    client: _RedisLike = aioredis.from_url(redis_url)
-    return client
+    from_url = cast(_RedisFromUrl, aioredis.from_url)
+    return from_url(redis_url)
 
 
 async def check_redis(redis_url: str, *, timeout: float = DEFAULT_PROBE_TIMEOUT) -> ProbeResult:
