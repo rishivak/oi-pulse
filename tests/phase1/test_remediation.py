@@ -80,7 +80,7 @@ class TestMigrationChain(unittest.TestCase):
         revision is a deliberate edit here, visible in review, instead of a silent
         lengthening nobody notices.
         """
-        self.assertEqual(len(self.chain), 8)
+        self.assertEqual(len(self.chain), 9)
         self.assertIsNone(self.chain[0].down_revision)
         for previous, current in itertools.pairwise(self.chain):
             self.assertEqual(current.down_revision, previous.revision)

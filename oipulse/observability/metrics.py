@@ -21,9 +21,13 @@ __all__ = [
     "record_alert_delivery",
     "record_alert_suppressed",
     "record_alert_triggered",
+    "record_backtest_run",
     "record_feature_computed",
     "record_feature_skipped",
     "record_provenance_failure",
+    "record_replay_reconstruction",
+    "record_replay_resume_rejection",
+    "record_replay_run",
     "record_research_artifact",
     "record_research_failure",
     "record_research_run",
@@ -331,3 +335,108 @@ def record_feature_skipped(feature_id: str, version: int, reason: str) -> None:
     labels = {"feature": feature_id, "version": str(version), "reason": reason}
     METRICS.inc(ANALYTICS_SKIPPED, labels)
     METRICS.inc(FEATURE_UNAVAILABLE, {"feature": feature_id, "version": str(version)})
+
+
+# --- Phase 7 replay and backtesting (`16-OBSERVABILITY.md` conventions,
+# `10-REPLAY.md` §4 and §6).
+REPLAY_RUNS = "replay_runs_total"
+REPLAY_RUN_DURATION = "replay_run_duration_seconds"
+REPLAY_STEPS = "replay_steps_total"
+REPLAY_STATES_BUILT = "replay_states_built_total"
+#: Checkpoint reuse vs reconstruction. `16` calls for both: under market-truth the
+#: hit count should be zero, and a surprising number of hits would mean the
+#: exact-identity rule had been weakened somewhere.
+REPLAY_CHECKPOINT_HITS = "replay_checkpoint_hits_total"
+REPLAY_CHECKPOINT_MISSES = "replay_checkpoint_misses_total"
+REPLAY_RECONSTRUCTION_DURATION = "replay_reconstruction_duration_seconds"
+#: Resume attempts refused because the build context or knowledge horizon differed.
+#: Should be rare; a rising count means runs are being resumed across a config change.
+REPLAY_RESUME_REJECTIONS = "replay_resume_rejections_total"
+
+BACKTEST_RUNS = "backtest_runs_total"
+BACKTEST_RUN_DURATION = "backtest_run_duration_seconds"
+BACKTEST_INTENTS = "backtest_intents_total"
+BACKTEST_FILLS = "backtest_fills_total"
+#: Labelled by reason, so "the strategy traded little" and "the strategy's orders
+#: could not be filled" stay distinguishable — they imply opposite conclusions.
+BACKTEST_REJECTIONS = "backtest_rejections_total"
+BACKTEST_PARTIAL_FILLS = "backtest_partial_fills_total"
+#: Fills priced against an assumed spread rather than an observed quote (`10` §6).
+#: Non-zero means the run is not comparable with a full-fidelity one.
+BACKTEST_ASSUMPTION_BASED_FILLS = "backtest_assumption_based_fills_total"
+#: Runs completed with no risk engine attached. While Phase 9 is pending this equals
+#: the run count; once it lands, a non-zero value is a misconfiguration.
+BACKTEST_UNRISKED_RUNS = "backtest_unrisked_runs_total"
+BACKTEST_LEDGER_DUPLICATES = "backtest_ledger_duplicate_fills_total"
+
+
+def record_replay_run(
+    run_id: str,
+    *,
+    status: str,
+    duration_seconds: float,
+    steps: int,
+    states_built: int,
+    checkpoint_hits: int,
+    checkpoint_misses: int,
+) -> None:
+    """One replay run. Primitives only: `replay/` may not import this module.
+
+    Hits and misses are both recorded rather than a ratio, so a dashboard can show
+    the absolute reconstruction load as well as the reuse rate — a 90% reuse rate
+    over ten steps and over ten thousand are very different operational facts.
+    """
+    labels = {"run": run_id}
+    METRICS.inc(REPLAY_RUNS, {**labels, "status": status})
+    METRICS.observe(REPLAY_RUN_DURATION, duration_seconds, labels)
+    METRICS.inc(REPLAY_STEPS, labels, steps)
+    METRICS.inc(REPLAY_STATES_BUILT, labels, states_built)
+    METRICS.inc(REPLAY_CHECKPOINT_HITS, labels, checkpoint_hits)
+    METRICS.inc(REPLAY_CHECKPOINT_MISSES, labels, checkpoint_misses)
+
+
+def record_replay_reconstruction(run_id: str, duration_seconds: float) -> None:
+    """One state reconstruction. The cost `16` asks to be visible per step."""
+    METRICS.observe(REPLAY_RECONSTRUCTION_DURATION, duration_seconds, {"run": run_id})
+
+
+def record_replay_resume_rejection(run_id: str, reason: str) -> None:
+    METRICS.inc(REPLAY_RESUME_REJECTIONS, {"run": run_id, "reason": reason})
+
+
+def record_backtest_run(
+    run_id: str,
+    strategy_id: str,
+    *,
+    status: str,
+    duration_seconds: float,
+    intents: int,
+    fills: int,
+    partial_fills: int,
+    assumption_based_fills: int,
+    rejection_reasons: dict[str, int],
+    risk_evaluated: bool,
+    duplicate_fills: int = 0,
+) -> None:
+    """One backtest run, with the flags that qualify its numbers.
+
+    `assumption_based_fills` and `risk_evaluated` are emitted as metrics, not only
+    stored on the artifact: an operator watching a dashboard must be able to see that
+    a run's results rest on assumed spreads or on no risk constraint at all, without
+    opening the result.
+    """
+    labels = {"run": run_id, "strategy": strategy_id}
+    METRICS.inc(BACKTEST_RUNS, {**labels, "status": status})
+    METRICS.observe(BACKTEST_RUN_DURATION, duration_seconds, labels)
+    METRICS.inc(BACKTEST_INTENTS, labels, intents)
+    METRICS.inc(BACKTEST_FILLS, labels, fills)
+    if partial_fills:
+        METRICS.inc(BACKTEST_PARTIAL_FILLS, labels, partial_fills)
+    if assumption_based_fills:
+        METRICS.inc(BACKTEST_ASSUMPTION_BASED_FILLS, labels, assumption_based_fills)
+    for reason, count in sorted(rejection_reasons.items()):
+        METRICS.inc(BACKTEST_REJECTIONS, {**labels, "reason": reason}, count)
+    if not risk_evaluated:
+        METRICS.inc(BACKTEST_UNRISKED_RUNS, labels)
+    if duplicate_fills:
+        METRICS.inc(BACKTEST_LEDGER_DUPLICATES, labels, duplicate_fills)
