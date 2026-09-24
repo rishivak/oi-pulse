@@ -187,6 +187,17 @@ class Ledger:
     def position(self, instrument_id: int) -> Position | None:
         return self._positions.get(instrument_id)
 
+    def has_applied(self, fill: Fill) -> bool:
+        """Whether this exact fill is already in the book.
+
+        Additive accessor (Phase 8): a caller sometimes needs to know whether a
+        redelivered fill would be a no-op *without* applying it -- deciding whether
+        to release a cash reservation, for instance. Exposing the question here keeps
+        the applied-set in one place; a caller tracking its own copy would be a
+        second bookkeeping system for the two to disagree about.
+        """
+        return fill_key(fill) in self._applied
+
     def positions(self) -> tuple[Position, ...]:
         """Sorted by instrument id: iteration order must not depend on insertion order,
         or two runs that traded the same instruments in a different sequence would

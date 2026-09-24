@@ -311,14 +311,41 @@ class TestArchitectureGuards(unittest.TestCase):
                                 f"{path.name} imports {module}",
                             )
 
-    def test_no_phase_8_or_later_package_was_created(self) -> None:
-        """Phase 7 only. Paper trading, OMS, portfolio and terminal are later."""
-        for package in ("paper", "trading", "portfolio", "terminal", "oms"):
-            with self.subTest(package=package):
-                self.assertFalse(
-                    (REPO / "oipulse" / package).exists(),
-                    f"oipulse/{package} belongs to a later phase",
-                )
+    def test_phase_7_does_not_depend_on_any_later_phase(self) -> None:
+        """Replay and backtest must not import a later layer.
+
+        This assertion previously read "no later-phase package exists at all",
+        which was the right check while Phase 7 was the frontier. Phase 8 has since
+        landed `oipulse/trading`, so the *existence* form is now false for a
+        legitimate reason and would have to be deleted or weakened to pass.
+
+        It is replaced with the stronger property it was actually protecting:
+        Phase 7 code must not **depend** on a later phase. Existence was only ever
+        a proxy for that, and the dependency check keeps biting as later phases
+        arrive, where the existence check would have to be relaxed at each one.
+
+        The packages that do not yet exist are still listed: naming a package that
+        is absent costs nothing and arms the rule before the code it governs.
+        """
+        later_phases = ("trading", "paper", "portfolio", "terminal", "oms")
+        for package in ("replay", "backtest"):
+            for path in sorted((REPO / "oipulse" / package).rglob("*.py")):
+                tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+                imported: list[str] = []
+                for node in ast.walk(tree):
+                    if isinstance(node, ast.Import):
+                        imported += [a.name for a in node.names]
+                    elif isinstance(node, ast.ImportFrom) and node.module:
+                        imported.append(node.module)
+                for module in imported:
+                    for later in later_phases:
+                        target = f"oipulse.{later}"
+                        with self.subTest(file=path.name, module=module):
+                            self.assertFalse(
+                                module == target or module.startswith(target + "."),
+                                f"{package}/{path.name} imports {module}, which "
+                                f"belongs to a later phase",
+                            )
 
     def test_no_api_route_implies_live_trading(self) -> None:
         for name in ("replay.py", "backtest.py"):

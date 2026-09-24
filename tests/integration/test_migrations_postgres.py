@@ -161,6 +161,7 @@ class TestMigrationsApply(unittest.TestCase):
             PHASE5_TABLES,
             PHASE6_TABLES,
             PHASE7_TABLES,
+            PHASE8_TABLES,
         )
 
         self._upgrade_head()
@@ -173,6 +174,7 @@ class TestMigrationsApply(unittest.TestCase):
             *PHASE5_TABLES,
             *PHASE6_TABLES,
             *PHASE7_TABLES,
+            *PHASE8_TABLES,
         ):
             with self.subTest(table=table):
                 self.assertIn(table, present)
@@ -253,6 +255,7 @@ class TestMigrationsApply(unittest.TestCase):
             PHASE5_TABLES,
             PHASE6_TABLES,
             PHASE7_TABLES,
+            PHASE8_TABLES,
         )
 
         self._upgrade_head()
@@ -269,6 +272,7 @@ class TestMigrationsApply(unittest.TestCase):
             *PHASE5_TABLES,
             *PHASE6_TABLES,
             *PHASE7_TABLES,
+            *PHASE8_TABLES,
         ):
             with self.subTest(table=table):
                 self.assertNotIn(table, remaining, f"{table} survived the downgrade")
@@ -385,6 +389,71 @@ class TestMigrationsApply(unittest.TestCase):
             "WHERE table_name = 'replay_events' AND column_name = 'run_id'"
         )
         self.assertEqual([r[0] for r in nullable], ["NO"])
+
+    def test_the_phase_8_constraints_are_enforced_by_postgres(self) -> None:
+        """Paper-only mode and trade identity, asserted against the live catalogue.
+
+        A constraint present in a `.py` file and absent from the database enforces
+        nothing. Without the mode CHECK a live account row could be inserted for a
+        system with no live adapter; without the unique fill key a redelivered fill
+        would double a position at the storage layer even though the in-memory
+        ledger refused it.
+        """
+        self._upgrade_head()
+        account_defs = " ".join(
+            definition
+            for _, definition in self._rows(
+                "SELECT conname, pg_get_constraintdef(oid) FROM pg_constraint "
+                "WHERE conrelid = 'trade_accounts'::regclass"
+            )
+        )
+        self.assertIn("PAPER", account_defs)
+
+        for table, expected in (
+            ("trade_intents", "intent_id"),
+            ("trade_orders", "order_id"),
+            ("trade_fills", "fill_key"),
+        ):
+            with self.subTest(table=table):
+                defs = " ".join(
+                    definition
+                    for _, definition in self._rows(
+                        "SELECT conname, pg_get_constraintdef(oid) FROM pg_constraint "
+                        f"WHERE conrelid = '{table}'::regclass AND contype = 'u'"
+                    )
+                )
+                self.assertIn(expected, defs)
+
+        order_event_defs = " ".join(
+            definition
+            for _, definition in self._rows(
+                "SELECT conname, pg_get_constraintdef(oid) FROM pg_constraint "
+                "WHERE conrelid = 'trade_order_events'::regclass"
+            )
+        )
+        self.assertIn("sequence", order_event_defs)
+
+    def test_a_live_account_row_is_rejected_by_postgres(self) -> None:
+        """The paper-only gate, exercised rather than read.
+
+        This is the check that cannot be done by reading source: it inserts a row
+        claiming LIVE and requires the database to refuse it.
+        """
+        import sqlalchemy.exc
+
+        self._upgrade_head()
+
+        async def insert_live(conn: AsyncConnection) -> None:
+            await conn.execute(
+                sa.text(
+                    "INSERT INTO trade_accounts (account_id, owner, mode, status, "
+                    "currency, starting_cash, config, config_digest) VALUES "
+                    "('acc-live', 'x', 'LIVE', 'ACTIVE', 'INR', 1, '{}'::jsonb, 'd')"
+                )
+            )
+
+        with self.assertRaises(sqlalchemy.exc.IntegrityError):
+            self._query(insert_live)
 
 
 if __name__ == "__main__":
