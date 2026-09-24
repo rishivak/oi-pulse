@@ -98,7 +98,12 @@ class TestMigrationsApply(unittest.TestCase):
             "OIPULSE_PARTITION_ANCHOR": "2026-01-01",
         }
         return subprocess.run(
-            [sys.executable, "-m", "alembic", *args], cwd=REPO, env=env, capture_output=True, text=True, check=False
+            [sys.executable, "-m", "alembic", *args],
+            cwd=REPO,
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
         )
 
     def _upgrade_head(self) -> None:
@@ -146,18 +151,40 @@ class TestMigrationsApply(unittest.TestCase):
         """
         self._upgrade_head()
 
-    def test_phase_1_and_phase_2_tables_exist_after_upgrade(self) -> None:
-        from tests.phase2.test_migrations import PHASE1_TABLES, PHASE2_TABLES
+    def test_phase_1_2_and_3_tables_exist_after_upgrade(self) -> None:
+        from tests.phase2.test_migrations import (
+            PHASE1_TABLES,
+            PHASE2_TABLES,
+            PHASE3_TABLES,
+        )
 
         self._upgrade_head()
         present = self._tables()
-        for table in (*PHASE1_TABLES, *PHASE2_TABLES):
+        for table in (*PHASE1_TABLES, *PHASE2_TABLES, *PHASE3_TABLES):
             with self.subTest(table=table):
                 self.assertIn(table, present)
 
+    def test_the_checkpoint_identity_constraint_is_enforced_by_postgres(self) -> None:
+        """`UNIQUE (underlying_id, observed_at, knowledge_horizon, build_context_id)`.
+
+        Asserted against the live catalogue rather than the migration source: a
+        constraint that exists in a `.py` file and not in the database enforces
+        nothing, and a key silently missing `knowledge_horizon` would let two
+        genuinely different states collide.
+        """
+        self._upgrade_head()
+        rows = self._rows(
+            "SELECT conname, pg_get_constraintdef(oid) FROM pg_constraint "
+            "WHERE conrelid = 'state_checkpoints'::regclass AND contype = 'u'"
+        )
+        definitions = " ".join(definition for _, definition in rows)
+        for column in ("underlying_id", "observed_at", "knowledge_horizon", "build_context_id"):
+            with self.subTest(column=column):
+                self.assertIn(column, definitions)
+
     def test_partitions_exist_for_every_partitioned_parent(self) -> None:
         """A missing partition is otherwise discovered by a failed insert mid-session."""
-        from tests.phase2.test_migrations import PARTITIONED_TABLES
+        from tests.phase2.test_migrations import PARTITIONED_TABLES, PHASE3_PARTITIONED
 
         self._upgrade_head()
         counts = dict(
@@ -169,7 +196,7 @@ class TestMigrationsApply(unittest.TestCase):
                 "GROUP BY parent.relname"
             )
         )
-        for table in PARTITIONED_TABLES:
+        for table in (*PARTITIONED_TABLES, *PHASE3_PARTITIONED):
             with self.subTest(table=table):
                 self.assertGreater(counts.get(table, 0), 0, f"{table} has no partitions")
 
@@ -195,7 +222,11 @@ class TestMigrationsApply(unittest.TestCase):
         Safe because the database is a throwaway created by this class; the downgrade
         reverses only the revisions applied here.
         """
-        from tests.phase2.test_migrations import PHASE1_TABLES, PHASE2_TABLES
+        from tests.phase2.test_migrations import (
+            PHASE1_TABLES,
+            PHASE2_TABLES,
+            PHASE3_TABLES,
+        )
 
         self._upgrade_head()
         after_upgrade = self._tables()
@@ -203,7 +234,7 @@ class TestMigrationsApply(unittest.TestCase):
         down = self._alembic("downgrade", "002")
         self.assertEqual(down.returncode, 0, f"{down.stdout}\n{down.stderr}")
         remaining = self._tables()
-        for table in (*PHASE1_TABLES, *PHASE2_TABLES):
+        for table in (*PHASE1_TABLES, *PHASE2_TABLES, *PHASE3_TABLES):
             with self.subTest(table=table):
                 self.assertNotIn(table, remaining, f"{table} survived the downgrade")
 

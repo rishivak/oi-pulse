@@ -96,15 +96,18 @@ type = "layers"
 exhaustive = false
 # Verified against the actual import graph, not aspiration:
 #   run -> api, core, observability
-#   api -> core, observability
+#   api -> core, marketstate, observability
+#   marketstate -> core, dataquality, instruments, marketdata, observability
 #   marketdata -> core, dataquality, instruments, observability, persistence
 #   dataquality | events | instruments | observability | persistence -> core
-# `api` and `marketdata` sit in one layer as independent siblings: neither imports the
-# other, and pinning an order between them would invent a constraint the design does
-# not make.
+# `marketstate` (Phase 3, L3) sits above `marketdata` because it reads observations and
+# never the reverse: the ingestion layer must not depend on state assembly, or a WS
+# consumer would block on it.
 layers = [
     "oipulse.run",
-    "oipulse.api : oipulse.marketdata",
+    "oipulse.api",
+    "oipulse.marketstate",
+    "oipulse.marketdata",
     "oipulse.dataquality : oipulse.events : oipulse.instruments : oipulse.observability : oipulse.persistence",
     "oipulse.core",
 ]
@@ -119,6 +122,7 @@ forbidden_modules = [
     "oipulse.events",
     "oipulse.instruments",
     "oipulse.marketdata",
+    "oipulse.marketstate",
     "oipulse.observability",
     "oipulse.persistence",
     "oipulse.run",
