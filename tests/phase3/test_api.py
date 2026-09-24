@@ -147,5 +147,98 @@ class TestResponseEnvelope(unittest.TestCase):
         self.assertIn("observed_at", flat)
 
 
+class TestFastAPIEndpoint(unittest.TestCase):
+    """End-to-end HTTP tests of /market/state using FastAPI TestClient."""
+
+    def setUp(self):
+        from fastapi.testclient import TestClient
+
+        from oipulse.api.app import create_app
+        from oipulse.core.config import Settings
+        from oipulse.marketstate.checkpoints import StateService
+
+        self.settings = Settings(
+            app_env="development",
+            role="api",
+            log_level="INFO",
+            instance_id="test-api-1",
+            database_url="postgresql+asyncpg://test:test@localhost:5432/test",
+            redis_url="redis://localhost:6379/0",
+            session_secret_key="a" * 32,
+            token_encryption_key="b" * 32,
+        )
+        self.app = create_app(self.settings)
+        self.obs_store = populated_store(at(0))
+        self.b = builder(self.obs_store)
+        self.service = StateService(self.b)
+        self.app.state.state_service = self.service
+        self.client = TestClient(self.app)
+
+    def test_valid_request_with_default_knowledge_time(self):
+        resp = self.client.get(
+            "/market/state",
+            params={
+                "underlying_id": int(UNDERLYING),
+                "market_time": at(0).isoformat(),
+            },
+        )
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertEqual(body["meta"]["semantics"], "knowledge_at")
+        self.assertEqual(body["meta"]["market_time"], at(0).isoformat())
+        self.assertEqual(body["meta"]["knowledge_time"], at(0).isoformat())
+        self.assertIn("spot", body["data"])
+        self.assertIn("expiries", body["data"])
+
+    def test_valid_request_with_explicit_later_knowledge_time(self):
+        resp = self.client.get(
+            "/market/state",
+            params={
+                "underlying_id": int(UNDERLYING),
+                "market_time": at(0).isoformat(),
+                "knowledge_time": at(10).isoformat(),
+            },
+        )
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertEqual(body["meta"]["semantics"], "market_truth_at")
+        self.assertEqual(body["meta"]["market_time"], at(0).isoformat())
+        self.assertEqual(body["meta"]["knowledge_time"], at(10).isoformat())
+
+    def test_knowledge_time_before_market_time_returns_422(self):
+        resp = self.client.get(
+            "/market/state",
+            params={
+                "underlying_id": int(UNDERLYING),
+                "market_time": at(10).isoformat(),
+                "knowledge_time": at(0).isoformat(),
+            },
+        )
+        self.assertEqual(resp.status_code, 422)
+        body = resp.json()
+        self.assertIn("knowledge_time < market_time is rejected", body["detail"])
+
+    def test_missing_query_parameters_returns_422(self):
+        resp = self.client.get("/market/state")
+        self.assertEqual(resp.status_code, 422)
+
+    def test_unconfigured_process_returns_503(self):
+        from fastapi.testclient import TestClient
+
+        from oipulse.api.app import create_app
+
+        unconfigured_app = create_app(self.settings)
+        client = TestClient(unconfigured_app)
+        resp = client.get(
+            "/market/state",
+            params={
+                "underlying_id": int(UNDERLYING),
+                "market_time": at(0).isoformat(),
+            },
+        )
+        self.assertEqual(resp.status_code, 503)
+        self.assertIn("state assembly is not configured", resp.json()["detail"])
+
+
 if __name__ == "__main__":
     unittest.main()
