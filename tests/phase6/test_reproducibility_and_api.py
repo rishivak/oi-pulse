@@ -503,5 +503,192 @@ class TestPhase1To5Regression(unittest.TestCase):
         self.assertNotIn('"decision_time"', tables)
 
 
+class MockResearchStore:
+    def __init__(self, studies=(), results=(), datasets=(), evaluations=()):
+        self._studies = {f"{s.study_id}@{s.version}": s for s in studies}
+        self._results = {r.content_hash: r for r in results}
+        self._datasets = {d.content_hash: d for d in datasets}
+        self._evaluations = list(evaluations)
+
+    def list_studies(self):
+        return list(self._studies.values())
+
+    def get_study(self, study_id: str, version: int):
+        return self._studies.get(f"{study_id}@{version}")
+
+    def create_study(self, body: dict):
+        if "question" not in body or not body["question"]:
+            raise ValueError("question is required")
+        s = study(question=body["question"])
+        self._studies[f"{s.study_id}@{s.version}"] = s
+        return s
+
+    def delete_study(self, study_id: str, version: int) -> bool:
+        key = f"{study_id}@{version}"
+        if key in self._studies:
+            del self._studies[key]
+            return True
+        return False
+
+    def run_study(self, the_study, knowledge_time):
+        _, _, res = _run(the_study=the_study)
+        self._results[res.content_hash] = res
+        return res
+
+    def get_result(self, content_hash: str):
+        return self._results.get(content_hash)
+
+    def list_results(self, study_id=None, dataset_content_hash=None):
+        return list(self._results.values())
+
+    def get_dataset(self, content_hash: str):
+        return self._datasets.get(content_hash)
+
+    def list_datasets(self):
+        return list(self._datasets.values())
+
+    def list_signal_evaluations(self, result_content_hash=None, signal_type=None):
+        return list(self._evaluations)
+
+
+class TestResearchFastAPIEndpoints(unittest.TestCase):
+    """End-to-end HTTP tests of /research endpoints using FastAPI TestClient."""
+
+    def setUp(self):
+        from fastapi.testclient import TestClient
+
+        from oipulse.api.app import create_app
+        from oipulse.core.config import Settings
+
+        self.settings = Settings(
+            app_env="development",
+            role="api",
+            log_level="INFO",
+            instance_id="test-api-research",
+            database_url="postgresql+asyncpg://test:test@localhost:5432/test",
+            redis_url="redis://localhost:6379/0",
+            session_secret_key="a" * 32,
+            token_encryption_key="b" * 32,
+        )
+        self.app = create_app(self.settings)
+        self.client = TestClient(self.app)
+
+    def test_unconfigured_store_returns_503(self):
+        resp = self.client.get("/research/studies")
+        self.assertEqual(resp.status_code, 503)
+        self.assertIn("no research store is configured", resp.json()["detail"])
+
+    def test_studies_list_and_get(self):
+        s = study(question="Test question")
+        self.app.state.research_store = MockResearchStore(studies=[s])
+
+        resp = self.client.get("/research/studies")
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertEqual(body["meta"]["count"], 1)
+        self.assertEqual(body["data"][0]["study_id"], s.study_id)
+
+        get_resp = self.client.get(f"/research/studies/{s.study_id}/versions/{s.version}")
+        self.assertEqual(get_resp.status_code, 200)
+        self.assertEqual(get_resp.json()["data"]["question"], "Test question")
+
+    def test_study_get_unknown_returns_404(self):
+        self.app.state.research_store = MockResearchStore()
+        resp = self.client.get("/research/studies/unknown/versions/1")
+        self.assertEqual(resp.status_code, 404)
+
+    def test_study_create_and_delete(self):
+        self.app.state.research_store = MockResearchStore()
+        create_resp = self.client.post("/research/studies", json={"question": "New hypothesis"})
+        self.assertEqual(create_resp.status_code, 201)
+        data = create_resp.json()["data"]
+        study_id = data["study_id"]
+        version = data["version"]
+
+        del_resp = self.client.delete(f"/research/studies/{study_id}/versions/{version}")
+        self.assertEqual(del_resp.status_code, 204)
+
+        del_unknown = self.client.delete(f"/research/studies/{study_id}/versions/{version}")
+        self.assertEqual(del_unknown.status_code, 404)
+
+    def test_study_create_invalid_returns_422(self):
+        self.app.state.research_store = MockResearchStore()
+        resp = self.client.post("/research/studies", json={})
+        self.assertEqual(resp.status_code, 422)
+
+    def test_run_study_missing_knowledge_time_returns_422(self):
+        s = study()
+        self.app.state.research_store = MockResearchStore(studies=[s])
+        resp = self.client.post(
+            f"/research/studies/{s.study_id}/run", params={"version": s.version}
+        )
+        self.assertEqual(resp.status_code, 422)
+
+    def test_run_study_with_knowledge_time_returns_200(self):
+        s = study(
+            horizons=EventStudy.horizons_of(5, 15),
+            minimum_sample=1,
+            sampling=SamplingPolicy(
+                event_sampling_policy=EventSamplingPolicy.DECORRELATED,
+                minimum_event_separation=timedelta(minutes=30),
+            ),
+        )
+        self.app.state.research_store = MockResearchStore(studies=[s])
+        resp = self.client.post(
+            f"/research/studies/{s.study_id}/run",
+            params={"version": s.version, "knowledge_time": at(100).isoformat()},
+        )
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertIn("data", body)
+        self.assertIn("meta", body)
+        self.assertTrue(body["meta"]["content_hash"].startswith("res_"))
+
+    def test_results_get_and_list(self):
+        _, _, res = _run()
+        self.app.state.research_store = MockResearchStore(results=[res])
+
+        list_resp = self.client.get("/research/results")
+        self.assertEqual(list_resp.status_code, 200)
+        self.assertEqual(list_resp.json()["meta"]["count"], 1)
+
+        get_resp = self.client.get(f"/research/results/{res.content_hash}")
+        self.assertEqual(get_resp.status_code, 200)
+        self.assertEqual(get_resp.json()["meta"]["content_hash"], res.content_hash)
+
+        unknown_resp = self.client.get("/research/results/res_unknown")
+        self.assertEqual(unknown_resp.status_code, 404)
+
+    def test_datasets_get_and_list(self):
+        d = dataset(_metrics([0, 40]))
+        self.app.state.research_store = MockResearchStore(datasets=[d])
+
+        list_resp = self.client.get("/research/datasets")
+        self.assertEqual(list_resp.status_code, 200)
+        self.assertEqual(list_resp.json()["meta"]["count"], 1)
+
+        get_resp = self.client.get(f"/research/datasets/{d.content_hash}")
+        self.assertEqual(get_resp.status_code, 200)
+        self.assertEqual(get_resp.json()["data"]["content_hash"], d.content_hash)
+
+        unknown_resp = self.client.get("/research/datasets/dset_unknown")
+        self.assertEqual(unknown_resp.status_code, 404)
+
+    def test_signal_evaluations_list(self):
+        from oipulse.research.signal_evaluation import evaluate_by_transition
+
+        pairs = [
+            (make_signal(status=SignalStatus.ACTIVE), Decimal("0.01")),
+            (make_signal(status=SignalStatus.CONFIRMED), Decimal("0.03")),
+        ]
+        evals = evaluate_by_transition(pairs, minimum_sample=1)
+        self.app.state.research_store = MockResearchStore(evaluations=evals)
+
+        resp = self.client.get("/research/signal-evaluations")
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertEqual(body["meta"]["count"], len(evals))
+
+
 if __name__ == "__main__":
     unittest.main()
