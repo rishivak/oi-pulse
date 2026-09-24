@@ -64,9 +64,11 @@ method without a time mode does not compile past lint.
 
 **Deliverables** Instrument master (identity / version / vendor mapping) · expiry calendar
 from the exchange · `InstrumentUniverse` · **`SubscriptionPlanner`** (capacity planning,
-`ACCEPTED`/`DEGRADED`/`UNSATISFIABLE`) · `UpstoxMarketDataProvider` (REST + WS) · event
-identity resolution with `identity_confidence` · **provider timestamp mapping and
-feed-session identity verification (soak)** · append-only bitemporal observation store ·
+`ACCEPTED`/`DEGRADED`/`UNSATISFIABLE`) · `UpstoxMarketDataProvider` (REST + **V3**
+WebSocket) · **V3 Protobuf frame decoding against the official `.proto`** · **recorded
+V3 binary fixtures** · event identity resolution with `identity_confidence` · **provider
+timestamp mapping and feed-session identity verification (soak)** · append-only
+bitemporal observation store ·
 rate-limit governor · historical **daily** OI backfill job · OHLC backfill.
 
 **Modules** `instruments/`, `marketdata/*`.
@@ -77,19 +79,31 @@ rate-limit governor · historical **daily** OI backfill job · OHLC backfill.
 
 **Tests** Ingestion idempotency under replay; two distinct events at one timestamp yield
 two rows; out-of-order arrival; reconnect creates a new feed session; backfill invisible
-to earlier `knowledge_as_of`; instrument version resolution as-of.
+to earlier `knowledge_as_of`; instrument version resolution as-of; **binary frame →
+Protobuf decode → canonical model → normalization, driven by recorded V3 fixtures**;
+neither `provider_event_id` nor `channel_sequence` is ever synthesized.
 
-**Acceptance** WS + REST ingesting for all configured underlyings across **multiple
-expiries**, with greeks and bid/ask persisted. Replaying a day changes no row counts.
-`knowledge_as_of` and `market_truth_at` return correctly divergent results on the
-11:40/11:44 fixture.
+**Acceptance** **V3** WS + REST ingesting for all configured underlyings across
+**multiple expiries**, with greeks and bid/ask persisted. Replaying a day changes no row
+counts. `knowledge_as_of` and `market_truth_at` return correctly divergent results on
+the 11:40/11:44 fixture. Recorded V3 fixtures exist for `market_info`, snapshot, LTPC
+and full/Greeks frames, across multiple instruments, multiple expiries and **two feed
+sessions**. A real NSE-session soak has run.
 
 **Risks** Subscription/connection limits constrain expiry breadth — mitigated by the
-planner making the cost explicit **before** subscribing (A-5). WS behaviour may differ
-from documentation — mitigated by a soak recording raw frames before any correctness
-dependency on provider sequence or venue timestamps (A-1, A-3); until verified, identity
-degrades to content hash with `identity_confidence = WEAK` and gap detection claims no
-more than the identity supports.
+planner making the cost explicit **before** subscribing (A-5).
+
+WS behaviour differed from documentation, and did so twice, which is the lesson of this
+phase: the V2 JSON feed is discontinued in favour of a **binary Protobuf V3 feed**, and
+that V3 feed supplies **no `provider_event_id` and no `channel_sequence`** (A-1 resolved
+negative, A-13 redefined, AD-30). Identity is therefore an OI Pulse-derived digest with
+`identity_confidence = WEAK`, and **provider-sequence gap detection does not exist on
+this feed**. Missing data is found through connectivity — reconnect and the heartbeat
+budget — and repaired by REST recovery.
+
+Remaining risk: the official V3 `.proto` must match what the feed emits (A-14). Mitigated
+by AD-31 — the decoder is injected and the client fails closed without it, so a guessed
+field mapping cannot reach durable data.
 
 > **Start collecting at the end of this phase and never stop.** Everything downstream is
 > gated on history depth.

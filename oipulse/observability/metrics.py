@@ -17,6 +17,11 @@ from dataclasses import dataclass, field
 
 __all__ = ["METRICS", "MetricsRegistry"]
 
+#: (metric name, sorted label pairs). Named because it appears in four signatures and
+#: a bare `tuple` there is an implicit Any under mypy --strict.
+MetricKey = tuple[str, tuple[tuple[str, str], ...]]
+Labels = dict[str, str] | None
+
 
 @dataclass
 class _Histogram:
@@ -52,36 +57,36 @@ class MetricsRegistry:
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
-        self._counters: dict[tuple, float] = defaultdict(float)
-        self._gauges: dict[tuple, float] = {}
-        self._histograms: dict[tuple, _Histogram] = defaultdict(_Histogram)
+        self._counters: dict[MetricKey, float] = defaultdict(float)
+        self._gauges: dict[MetricKey, float] = {}
+        self._histograms: dict[MetricKey, _Histogram] = defaultdict(_Histogram)
 
     @staticmethod
-    def _key(name: str, labels: dict[str, str] | None) -> tuple:
+    def _key(name: str, labels: Labels) -> MetricKey:
         return (name, tuple(sorted((labels or {}).items())))
 
-    def inc(self, name: str, labels: dict[str, str] | None = None, by: float = 1.0) -> None:
+    def inc(self, name: str, labels: Labels = None, by: float = 1.0) -> None:
         with self._lock:
             self._counters[self._key(name, labels)] += by
 
-    def set_gauge(self, name: str, value: float, labels: dict[str, str] | None = None) -> None:
+    def set_gauge(self, name: str, value: float, labels: Labels = None) -> None:
         with self._lock:
             self._gauges[self._key(name, labels)] = value
 
-    def observe(self, name: str, value: float, labels: dict[str, str] | None = None) -> None:
+    def observe(self, name: str, value: float, labels: Labels = None) -> None:
         with self._lock:
             self._histograms[self._key(name, labels)].observe(value)
 
-    def counter(self, name: str, labels: dict[str, str] | None = None) -> float:
+    def counter(self, name: str, labels: Labels = None) -> float:
         return self._counters.get(self._key(name, labels), 0.0)
 
-    def gauge(self, name: str, labels: dict[str, str] | None = None) -> float | None:
+    def gauge(self, name: str, labels: Labels = None) -> float | None:
         return self._gauges.get(self._key(name, labels))
 
-    def histogram(self, name: str, labels: dict[str, str] | None = None) -> _Histogram:
+    def histogram(self, name: str, labels: Labels = None) -> _Histogram:
         return self._histograms[self._key(name, labels)]
 
-    def snapshot(self) -> dict[str, dict]:
+    def snapshot(self) -> dict[str, dict[str, object]]:
         with self._lock:
             return {
                 "counters": {f"{n}{list(lbl)}": v for (n, lbl), v in self._counters.items()},

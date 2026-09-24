@@ -303,9 +303,9 @@ blocks Phase 1.
 
 | # | Assumption | Resolve by | Impact if wrong |
 |---|---|---|---|
-| A-1 | Upstox WS provides a usable per-channel sequence number or event id | Phase 2 soak, recording raw frames | **Handled, not assumed** (`06` §6): identity falls back to content hash with `identity_confidence = WEAK`, sequence-based gap detection is not claimed, and replay ordering falls back to `(observed_at, feed_session_ordinal, id)` — still deterministic |
+| A-1 | ~~Upstox WS provides a usable per-channel sequence number or event id~~ **RESOLVED — NEGATIVE.** External verification of the live **V3** feed observed `provider_event_id` absent and `channel_sequence` absent across two feed sessions | Resolved by V3 verification | Identity is the OI Pulse-derived content digest with `identity_confidence = WEAK`; no provider-sequence gap detection is performed or claimed; replay ordering uses `(observed_at, feed_session_ordinal, id)`, still deterministic (AD-30) |
 | A-2 | Upstox WS supplies greeks live, not only via the REST chain | Phase 2 | Greeks would be chain-cadence only; staleness budget for greeks must widen |
-| A-3 | Venue timestamps are present and reliable on WS messages | Phase 2 | `observed_at` would fall back to receipt time, weakening the bitemporal guarantee — would need explicit documentation |
+| A-3 | Venue timestamps are present and reliable on V3 frames | Open — needs recorded V3 frames | Provider timestamps are preserved **only where actually supplied**; absent means absent, never defaulted. Where absent, `observed_at` falls back to receipt time and the weaker bitemporal guarantee is recorded on the row |
 | A-4 | Historical OI endpoint granularity (EOD vs intraday) and date range | Phase 2 | Determines how much positioning research predates live collection |
 | A-5 | Rate-limit **and subscription/connection** budgets support the intended underlying × expiry breadth (review indicates ~2 connections, ~2,000 LTPC/Greeks, ~1,500 Full — configuration, not constants) | Phase 2, via the governor and `SubscriptionPlanner` | Planner returns `DEGRADED` or `UNSATISFIABLE` at planning time; fewer expiries or reduced data modes, recorded as a quality fact |
 | A-6 | Staleness budgets (spot 5 s, options 30 s, OI/greeks 60 s) match real cadence | Phase 3 measurement | Budgets recalibrated; `build_context_id` changes, so old and new states stay distinguishable |
@@ -314,7 +314,8 @@ blocks Phase 1.
 | A-9 | Broker order-history endpoints are sufficient for full reconciliation | Phase 10 | Reconciliation would need position-level inference; live trading delayed |
 | A-10 | Single `processor` handles all underlyings within checkpoint cadence | Phase 3 load test | Shard earlier than planned |
 | A-11 | Postgres partitioning suffices at target volume | Phase 3–6 measurement | Revisit AD-16 against its stated thresholds |
-| A-13 | **Provider event-id scope: global or per-feed-session?** Still unresolved. Tier-1 identity is now **scoped by `feed_session_id`**, chosen because the failure modes are asymmetric: scoping a globally-unique id at worst stores a genuine repeat twice (visible), while not scoping a session-scoped id silently discards live data (invisible). `provider_event_id` is preserved in full on every row regardless | Phase 2 external soak: capture two sessions' raw frames and compare event ids | If ids prove globally unique, the session component can be dropped from the uniqueness key — a narrowing change, safe to make later. Pinned by `test_cross_session_event_ids_do_not_collide` |
+| A-13 | ~~Provider event-id scope: global or per-feed-session?~~ **REDEFINED.** The question is moot: Upstox V3 supplies no provider event id at all. The standing risk is now stated directly — **Upstox V3 provides no provider event sequence; gap detection therefore relies on connectivity, the heartbeat budget and REST recovery rather than provider sequence** | Closed as originally posed by V3 verification (two sessions, both fields absent). The residual risk is permanent for this feed, not pending | Tier-1 and tier-2 identity remain implemented and session-scoped for a future provider that does supply them. For Upstox V3 the resolved tier is always the OI Pulse-derived digest, with identity confidence retained on every row (AD-30) |
+| A-14 | The official Upstox V3 `.proto` definition matches what the live feed emits | Open — blocked: the definition is provider-owned and was not obtainable in the implementation environment | `UpstoxV3FeedClient` refuses to construct without an injected decoder; there is no JSON fallback and no guessed field mapping, so a mismatch cannot silently corrupt durable data (AD-31) |
 | A-12 | One user for the foreseeable future | Product decision | Multi-tenant isolation moves forward; `/offline-session` stays deleted regardless |
 
 ---
@@ -394,6 +395,7 @@ Passes 1 and 2 remain applied; their traceability is in §11.
 | No bare `builder_version` where `build_context_id` subsumes it | clean — remaining mentions are inside the `BuildContext` definition and the statement that it is subsumed |
 | Checkpoint trigger enum identical in `02` and `04` (set comparison) | clean — 5 values each |
 | `channel_sequence` never called a total order without session qualification | clean |
+| No document claims Upstox supplies a provider event id or channel sequence | clean — A-1 resolved negative, A-13 redefined (AD-30) |
 | No unqualified "exactly once" claim | clean — the one match is the explicit negation |
 | `decision_time` never listed as a stored column | clean |
 | `AEAD` absent as a description of Fernet; `CSRF` present in `17` | clean |

@@ -21,6 +21,8 @@ Three structural commitments are expressed here rather than left to convention:
 
 from __future__ import annotations
 
+from typing import Any
+
 import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
 
@@ -38,12 +40,19 @@ __all__ = [
 METADATA = sa.MetaData()
 
 
-def _identity_columns() -> list[sa.Column]:
+def _identity_columns() -> list[sa.Column[Any]]:
     """Columns shared by every observation table.
 
     Factored so a new observation kind cannot accidentally omit one — an observation
     table missing `ingested_at` would silently break every knowledge-time query against
     it.
+
+    The element type is `Column[Any]` because the list is genuinely heterogeneous:
+    `Column` is generic and invariant in its Python type, so `Column("id", BigInteger)`
+    is a `Column[int]` and `Column("source", Text)` is a `Column[str]`. `Column[object]`
+    does not accept either — invariance, not a missing cast — and there is no common
+    parameter that does. This is the annotation SQLAlchemy itself uses for mixed column
+    collections; no column type or runtime behaviour changes.
     """
     return [
         sa.Column("id", sa.BigInteger, sa.Identity(), primary_key=True),

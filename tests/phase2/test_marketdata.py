@@ -76,7 +76,7 @@ from oipulse.marketdata.recovery import (
     coherence_mode_for,
     plan_recovery,
 )
-from oipulse.marketdata.store.memory import InMemoryObservationStore
+from oipulse.marketdata.store.memory import AsyncSinkAdapter, InMemoryObservationStore
 from oipulse.marketdata.subscription import (
     CapacityVerdict,
     DegradationStep,
@@ -102,6 +102,19 @@ def _clock(h: int = 6, m: int = 0, s: int = 0) -> FrozenClock:
 
 
 # ------------------------------------------------- canonical instrument identity
+
+
+def _chain_legs(clock: FrozenClock) -> list:
+    """Every leg of the synthetic chain, normalized. SYNTHETIC -- not recorded Upstox data."""
+    rows, _ = parse_chain_response(SYNTHETIC_CHAIN_RESPONSE)
+    out = []
+    for i, row in enumerate(rows):
+        out.extend(
+            normalize_chain_row(
+                row, call_instrument_id=i * 2, put_instrument_id=i * 2 + 1, clock=clock
+            )
+        )
+    return out
 
 
 class TestInstrumentIdentity(unittest.TestCase):
@@ -493,15 +506,7 @@ class TestIngestionIdempotency(unittest.TestCase):
     """Requirements G and H: replay and restart must not duplicate."""
 
     def _chain_observations(self, clock):
-        rows, _ = parse_chain_response(SYNTHETIC_CHAIN_RESPONSE)
-        out = []
-        for i, row in enumerate(rows):
-            out.extend(
-                normalize_chain_row(
-                    row, call_instrument_id=i * 2, put_instrument_id=i * 2 + 1, clock=clock
-                )
-            )
-        return out
+        return _chain_legs(clock)
 
     def test_replaying_a_batch_inserts_nothing_new(self):
         clock = _clock()
@@ -862,7 +867,7 @@ class TestCollectorRecovery(unittest.TestCase):
             SubscriptionPlanner(),
             RateLimitGovernor(self.clock),
             self.sessions,
-            self.store,
+            AsyncSinkAdapter(self.store),
         )
         for state in (
             ConnectionState.CONNECTING,
@@ -915,3 +920,219 @@ class TestCollectorRecovery(unittest.TestCase):
         )
         self.assertEqual(plan.underlying_ids, (100,))
         self.assertEqual(plan.expiry_ids, (10, 11))
+
+    def test_persist_writes_through_the_async_sink(self):
+        """The collector's write path must actually reach the store.
+
+        This is the test whose absence let a real defect through: `persist()` was
+        synchronous and called `append()` without awaiting it. Against the in-memory
+        twin, whose `append` is synchronous, everything looked correct. Against
+        `PostgresObservationRepository`, whose `append` is a coroutine, nothing was written
+        and `result.inserted` raised `AttributeError` on a coroutine object. Asserting
+        on the store's contents rather than on `persist`'s return value is the point --
+        a return value can be right while nothing is durable.
+        """
+        import asyncio
+
+        observations = _chain_legs(self.clock)
+        inserted = asyncio.run(self.collector.persist(observations))
+
+        self.assertEqual(inserted, len(observations))
+        self.assertEqual(self.store.count(), len(observations))
+
+    def test_persist_is_idempotent_through_the_collector(self):
+        """Replay through the collector, not just the store, must not duplicate."""
+        import asyncio
+
+        observations = _chain_legs(self.clock)
+        asyncio.run(self.collector.persist(observations))
+        again = asyncio.run(self.collector.persist(observations))
+
+        self.assertEqual(again, 0, "re-persisting the same batch inserts nothing")
+        self.assertEqual(self.store.count(), len(observations))
+
+    def test_the_durable_store_satisfies_the_sink_contract(self):
+        """`PostgresObservationRepository` is the sink the collector runs against in
+        production, so its `append` must match `ObservationSink` in both name and
+        awaitability -- a synchronous `persist` calling an async `append` writes
+        nothing and raises on the result.
+
+        Checked by parsing the source rather than importing it: SQLAlchemy is not
+        installable in this environment, and skipping would remove the only check that
+        catches this drift. The limitation is real and stated -- this proves the
+        signature, not that the write executes against PostgreSQL.
+        """
+        import ast
+        import inspect
+        from pathlib import Path
+
+        from oipulse.marketdata.collector import ObservationSink
+
+        self.assertTrue(
+            inspect.iscoroutinefunction(ObservationSink.append),
+            "the sink contract itself must be async",
+        )
+        self.assertTrue(
+            inspect.iscoroutinefunction(AsyncSinkAdapter.append),
+            "AsyncSinkAdapter.append must be awaitable",
+        )
+
+        source = Path("oipulse/marketdata/store/postgres.py").read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        store = next(
+            n
+            for n in tree.body
+            if isinstance(n, ast.ClassDef) and n.name == "PostgresObservationRepository"
+        )
+        appends = [n for n in store.body if getattr(n, "name", None) == "append"]
+        self.assertEqual(len(appends), 1, "PostgresObservationRepository must define append()")
+        self.assertIsInstance(
+            appends[0],
+            ast.AsyncFunctionDef,
+            "PostgresObservationRepository.append must be async to satisfy ObservationSink",
+        )
+
+
+class TestRecoveryPathWiring(unittest.TestCase):
+    """The gap -> recovery -> REST -> idempotent persist -> resume chain, end to end.
+
+    Re-verified after external verification, because the chain had a broken link that
+    no test touched: the collector called `provider.fetch_recovery_chain()`, the real
+    `UpstoxMarketDataProvider` did not define it, and the collector's `provider: object`
+    annotation plus `# type: ignore[attr-defined]` meant nothing failed until runtime --
+    where the resulting `AttributeError` was swallowed by the collector's broad `except`
+    and logged as a routine `recovery_fetch_failed`. Recovery would have been dead for
+    the whole session while looking like an unlucky fetch.
+
+    SYNTHETIC fixtures throughout. No recorded Upstox data exists in this repository.
+    """
+
+    def setUp(self):
+        from oipulse.marketdata.collector import CanonicalCollector
+        from oipulse.marketdata.providers.upstox.provider import (
+            ExpiryBinding,
+            UpstoxMarketDataProvider,
+        )
+
+        self.clock = _clock()
+        self.calls: list[tuple[str, object]] = []
+
+        class _FixtureRest:
+            """SYNTHETIC REST transport. Returns the synthetic chain, records calls."""
+
+            def __init__(self, calls):
+                self._calls = calls
+
+            async def get_option_chain(self, instrument_key, expiry):
+                self._calls.append((instrument_key, expiry))
+                return SYNTHETIC_CHAIN_RESPONSE
+
+            async def get_historical_oi(self, instrument_key, expiry, on):
+                raise AssertionError("recovery must not use the historical-OI endpoint")
+
+        self.sessions = SessionManager(self.clock, session_id_factory=lambda: "s1")
+        resolver = InstrumentResolver()
+        rows, _ = parse_chain_response(SYNTHETIC_CHAIN_RESPONSE)
+        for i, row in enumerate(rows):
+            if row.call_options:
+                resolver.register(row.call_options.instrument_key, i * 2, self.clock.now())
+            if row.put_options:
+                resolver.register(row.put_options.instrument_key, i * 2 + 1, self.clock.now())
+
+        self.provider = UpstoxMarketDataProvider(
+            _FixtureRest(self.calls), self.clock, resolver, self.sessions
+        )
+        self.provider.register_expiry(
+            ExpiryBinding(
+                expiry_id=10,
+                underlying_id=100,
+                underlying_vendor_key="NSE_INDEX|Nifty 50",
+                expiry=date(2026, 3, 5),
+            )
+        )
+        self.store = InMemoryObservationStore()
+        self.collector = CanonicalCollector(
+            self.clock,
+            SubscriptionPlanner(),
+            RateLimitGovernor(self.clock),
+            self.sessions,
+            AsyncSinkAdapter(self.store),
+            self.provider,
+        )
+        for state in (
+            ConnectionState.CONNECTING,
+            ConnectionState.AUTHENTICATING,
+            ConnectionState.SUBSCRIBING,
+            ConnectionState.STREAMING,
+        ):
+            self.sessions.transition(state)
+        self.sessions.open_session()
+
+    def _gap(self):
+        self.sessions.record_message("c", 1, IdentityConfidence.STRONG)
+        self.sessions.record_message("c", 5, IdentityConfidence.STRONG)
+        return self.sessions.drain_new_gaps()[0]
+
+    def test_the_provider_implements_the_collector_contract(self):
+        """Structural conformance, checked rather than assumed."""
+        import inspect
+
+        from oipulse.marketdata.collector import StreamingProvider
+
+        for name in ("stream", "fetch_recovery_chain"):
+            with self.subTest(method=name):
+                self.assertTrue(
+                    hasattr(self.provider, name),
+                    f"UpstoxMarketDataProvider is missing {name}(), which the collector calls",
+                )
+                self.assertTrue(hasattr(StreamingProvider, name))
+        self.assertTrue(
+            inspect.iscoroutinefunction(type(self.provider).fetch_recovery_chain),
+            "fetch_recovery_chain must be awaitable",
+        )
+
+    def test_a_gap_drives_a_real_rest_refetch_and_persists_it(self):
+        """The whole chain: gap -> plan -> out-of-band REST -> durable observations."""
+        import asyncio
+
+        plan = asyncio.run(self.collector.recover_after_gap(self._gap(), (100,), (10,)))
+
+        self.assertTrue(plan.out_of_band, "recovery must not queue behind routine polling")
+        self.assertEqual(
+            self.calls,
+            [("NSE_INDEX|Nifty 50", date(2026, 3, 5))],
+            "recovery must re-fetch the bound expiry through the normal REST path",
+        )
+        self.assertGreater(self.store.count(), 0, "recovered legs must be persisted")
+
+    def test_recovery_overlapping_the_resumed_stream_does_not_duplicate(self):
+        """The recovery fetch and the resumed stream may cover the same instant."""
+        import asyncio
+
+        gap = self._gap()
+        asyncio.run(self.collector.recover_after_gap(gap, (100,), (10,)))
+        after_first = self.store.count()
+        # The same gap recovered twice: a retry, or an overlap with the resumed stream.
+        asyncio.run(self.collector.recover_after_gap(gap, (100,), (10,)))
+
+        self.assertEqual(self.store.count(), after_first, "the identity key absorbs the overlap")
+
+    def test_the_gap_remains_a_permanent_record_after_recovery(self):
+        """Observations inside the window are absent, not zero, and stay attributable."""
+        import asyncio
+
+        asyncio.run(self.collector.recover_after_gap(self._gap(), (100,), (10,)))
+        self.assertEqual(
+            len([g for g in self.sessions.gaps if g.kind is GapKind.WEBSOCKET_GAP]),
+            1,
+            "recovery must not erase the gap it repaired",
+        )
+
+    def test_an_unbound_expiry_fails_loudly(self):
+        """An empty chain is indistinguishable from a market with no open interest."""
+        import asyncio
+
+        from oipulse.marketdata.providers.upstox.provider import UnknownExpiry
+
+        with self.assertRaises(UnknownExpiry):
+            asyncio.run(self.provider.fetch_recovery_chain(999))

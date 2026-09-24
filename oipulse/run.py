@@ -4,7 +4,7 @@
 startup:
 
     python -m oipulse.run --role api
-    python -m oipulse.run --role ingestor      # Phase 2 runtime, external environment
+    python -m oipulse.run --role ingestor      # Phase 2 runtime
     python -m oipulse.run --role processor     # Phase 3
     python -m oipulse.run --role trader        # feature-flagged, off by default
     python -m oipulse.run --role jobs
@@ -32,14 +32,15 @@ from oipulse.core.config import Settings, load_settings
 from oipulse.core.errors import ConfigurationError
 from oipulse.observability.logging import configure_logging, get_logger
 
-__all__ = ["main", "run_api"]
+__all__ = ["main", "run_api", "run_ingestor_role"]
 
 VALID_ROLES = ("api", "ingestor", "processor", "trader", "jobs", "all")
 
 #: Roles whose runtime arrives in a later phase. Named individually so an operator gets
 #: "not implemented until Phase 3" rather than a silent no-op or a stack trace.
+#: `ingestor` is no longer here: its runtime is implemented in
+#: `oipulse.marketdata.runtime` and dispatched below.
 _PHASE_OF_ROLE = {
-    "ingestor": "Phase 2 (requires provider credentials and PostgreSQL)",
     "processor": "Phase 3",
     "trader": "Phase 8 onward; live execution stays disabled behind three gates",
     "jobs": "Phase 2",
@@ -91,6 +92,31 @@ def run_api(settings: Settings, host: str, port: int, reload: bool) -> int:
     return 0
 
 
+def run_ingestor_role(settings: Settings) -> int:
+    """Start the canonical collector. Imports the market-data stack only at this point.
+
+    Lazy for the same reason as `run_api`: `--check` and `--help` must work on an
+    interpreter without SQLAlchemy or a WebSocket client installed, which is exactly
+    where an operator most wants to validate their configuration.
+    """
+    try:
+        from oipulse.marketdata.runtime import build_spec_from_env, run_ingestor
+    except ModuleNotFoundError as exc:  # pragma: no cover - environment dependent
+        print(
+            f"cannot start the ingestor role: {exc.name} is not installed.\n"
+            f"Install the runtime dependencies with:  pip install -e .",
+            file=sys.stderr,
+        )
+        return 3
+
+    try:
+        spec = build_spec_from_env()
+    except ConfigurationError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    return run_ingestor(settings, spec)
+
+
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
 
@@ -123,6 +149,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if role == "api":
         return run_api(settings, args.host, args.port, args.reload)
+
+    if role == "ingestor":
+        return run_ingestor_role(settings)
 
     phase = _PHASE_OF_ROLE.get(role)
     print(

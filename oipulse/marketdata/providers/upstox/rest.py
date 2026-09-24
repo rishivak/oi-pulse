@@ -156,11 +156,31 @@ class UpstoxRestClient:
                 METRICS.inc(REST_ERRORS, {"endpoint": endpoint.value, "status": str(status)})
                 raise UpstoxRestError(f"client error {status}", status)
 
-            return response.json()
+            # Narrowed, not cast: `.json()` is typed `Any`, and a non-object body
+            # would otherwise flow into the parsers as though it were a response
+            # envelope and fail much later with a confusing shape error.
+            body = response.json()
+            if not isinstance(body, dict):
+                raise UpstoxRestError(
+                    f"expected a JSON object from {path}, got {type(body).__name__}",
+                    status,
+                )
+            return body
 
         raise UpstoxRestError(f"exhausted {_MAX_ATTEMPTS} attempts for {path}")
 
     # ------------------------------------------------------------------ endpoints
+
+    async def get_json(self, path: str) -> dict[str, Any]:
+        """Authenticated GET returning the raw JSON body.
+
+        The V3 feed-authorize endpoint is not a market-data endpoint and needs no
+        normalization, so it is served here rather than given a bespoke client. Budget
+        is accounted against DISCOVERY: authorize is a low-rate control call, and
+        leaving it unaccounted would let it contend with option-chain polling
+        invisibly.
+        """
+        return await self._request(EndpointClass.DISCOVERY, path)
 
     async def get_option_contracts(self, instrument_key: str) -> dict[str, Any]:
         """Expiry and contract discovery. Cached daily by the caller (`06` §4)."""

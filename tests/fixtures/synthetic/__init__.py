@@ -83,14 +83,21 @@ SYNTHETIC_CHAIN_WITH_MALFORMED_ROW = {
     ],
 }
 
-#: A WS frame carrying identity hints. Whether Upstox actually sends these is A-1.
+#: A WS frame from a **hypothetical** provider that supplies its own event identity.
+#:
+#: Upstox V3 does NOT: verification observed `provider_event_id` and `channel_sequence`
+#: both absent across two feed sessions. This fixture exists to keep the tier-1 and
+#: tier-2 identity paths under test for a future provider that does supply them, and it
+#: uses the explicit field names, not guessed ones. An earlier version used `event_id`
+#: and `sequence`, which encouraged the adapter to guess at candidate key names and
+#: risked promoting a coincidentally-named field to a provider identity.
 SYNTHETIC_WS_TICK_WITH_IDENTITY = {
     "_provenance": PROVENANCE,
     "instrument_key": "NSE_FO|CE25000|2026-03-05",
     "channel": "option_chain",
-    "event_id": "evt-000001",
-    "sequence": 1,
-    "ts": "2026-03-03T06:00:00.250000+00:00",
+    "provider_event_id": "evt-000001",
+    "channel_sequence": 1,
+    "exchange_timestamp": "2026-03-03T06:00:00.250000+00:00",
     "market_data": {
         "ltp": 121.0,
         "oi": 451000,

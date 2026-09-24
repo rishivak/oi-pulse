@@ -161,8 +161,7 @@ Signal rules are declared, not hand-coded ad hoc:
     ],
     quality_requirements=["quality != UNRELIABLE"],
 )
-def put_support_migration(ctx: RuleContext) -> RuleOutcome:
-    ...
+def put_support_migration(ctx: RuleContext) -> RuleOutcome: ...
 ```
 
 - `requires_features` pins **exact feature versions**. A feature bumping to v3 does not

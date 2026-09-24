@@ -1,0 +1,14 @@
+{
+  "captured_at": "2026-09-24T11:09:41.943195+00:00",
+  "feed": "upstox_market_data_v3",
+  "subscription_mode": "ltpc",
+  "instrument_type": "index",
+  "frame_kind": "initial_snapshot",
+  "proto_revision": "com.upstox.marketdatafeederv3udapi.rpc.proto",
+  "feed_session_ordinal": 1,
+  "instrument_keys": [
+    "NSE_INDEX|Nifty 50"
+  ],
+  "sanitization": "access token, authorized URI and account identifiers omitted; payload unchanged",
+  "notes": "Live Upstox V3 ltpc frame captured in session 1"
+}

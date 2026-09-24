@@ -41,7 +41,13 @@ python_files = ["test_*.py"]
 [tool.ruff]
 target-version = "py312"
 line-length = 100
-exclude = ["backend", "frontend", ".venv", "oipulse/migrations/versions"]
+exclude = [
+  "backend",
+  "frontend",
+  ".venv",
+  "oipulse/migrations/versions",
+  "oipulse/marketdata/providers/upstox/proto/MarketDataFeed_pb2.py",
+]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP", "B", "C4", "SIM", "RUF"]

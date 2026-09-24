@@ -49,6 +49,18 @@ jobs:
       - name: Schema parity (observation kinds <-> tables <-> migrations)
         run: python tools/check_schema_parity.py
 
+      # PostgreSQL ordering: parent table -> constraints -> partitions -> indexes.
+      # External verification found migration 0002 partitioning `obs_depth` before
+      # creating it; nothing in CI would have caught it.
+      - name: Migration operation ordering
+        run: python tools/check_migration_order.py
+
+      # A stdlib subset of `mypy --strict`, so the strict-typing contract is still
+      # enforced on a runner with no package index. The `typecheck` job below runs
+      # real mypy and remains authoritative.
+      - name: Strict-typing subset (stdlib approximation)
+        run: python tools/check_typing_strict.py
+
       - name: Foundation tests (stdlib only)
         run: python -m unittest discover -s tests -t . -v
 
@@ -93,6 +105,48 @@ jobs:
       # cannot be skipped, import-linter gives richer layering analysis. The boundary
       # contract is the one thing that must not be silently disabled.
       - run: lint-imports
+
+  migrations:
+    name: Migrations against real PostgreSQL
+    runs-on: ubuntu-latest
+    # The structural migration tests run in the `gate` job with no database. This job
+    # is the other half: it applies the chain to a real PostgreSQL and introspects the
+    # result. `tests/integration/` skips without DATABASE_URL, so without this job the
+    # migration would again be unverified against an actual server.
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: oipulse
+          POSTGRES_PASSWORD: oipulse
+          POSTGRES_DB: oipulse_ci
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U oipulse"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgresql+asyncpg://oipulse:oipulse@localhost:5432/oipulse_ci
+      OIPULSE_PARTITION_ANCHOR: "2026-01-01"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -e ".[dev]"
+      # A skip here would mean the database was unreachable, and a skipped migration
+      # suite must not read as a pass -- that is precisely how the chain reached
+      # external verification unapplied. `-p no:randomly --strict-markers` keeps the
+      # run deterministic; the grep turns any skip into a failure.
+      - name: Apply the chain to PostgreSQL (must not skip)
+        run: |
+          set -o pipefail
+          pytest -q tests/integration/test_migrations_postgres.py -rs 2>&1 | tee out.txt
+          if grep -qi "skipped" out.txt; then
+            echo "::error::migration integration tests skipped; they must run in CI"
+            exit 1
+          fi
 
   tests:
     name: Full suite

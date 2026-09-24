@@ -11,7 +11,7 @@ One image, one codebase; the role is selected at startup.
 
 ```bash
 python -m oipulse.run --role api
-python -m oipulse.run --role ingestor      # runtime lands in Phase 2
+python -m oipulse.run --role ingestor      # Phase 2 runtime; needs OIPULSE_INGESTOR_UNIVERSE
 python -m oipulse.run --role processor     # Phase 3
 python -m oipulse.run --role trader        # Phase 8+; live execution stays disabled
 python -m oipulse.run --role jobs          # Phase 2
@@ -105,7 +105,7 @@ appropriate at the API edge for request models, where no such constraint applies
 | Redis | `REDIS_URL`, pool size |
 | Upstox | client id/secret, redirect URI, API/WS bases, rate-limit budgets, **subscription capacity budgets** (`06` §5) |
 | Security | `TOKEN_ENCRYPTION_KEY`, `SESSION_SECRET_KEY`, cookie policy |
-| Market data | universe defaults, chain poll cadence, WS heartbeat budget |
+| Market data | `OIPULSE_INGESTOR_UNIVERSE` (this shard's universe, JSON), `UPSTOX_ACCESS_TOKEN`, chain poll cadence, WS heartbeat budget |
 | State | checkpoint cadence, **staleness budgets per category**, anchor max age, reconstruction concurrency limit |
 | Analytics | enabled features, cadence overrides |
 | Trading | `LIVE_TRADING_ENABLED` (default **false**), broker timeouts, reconciliation interval |
@@ -115,6 +115,30 @@ Startup validation: no placeholder secrets; encryption key valid and correct len
 database reachable and migrated to head; Redis reachable; in production, docs disabled,
 `reload` off, secure cookies on, and `LIVE_TRADING_ENABLED` requiring a second explicit
 confirmation variable.
+
+**The ingestor shard's universe is configuration with no default.** `OIPULSE_INGESTOR_UNIVERSE`
+is a JSON document naming the data mode, the vendor-key/instrument-id mappings, the
+underlying ids and the expiry bindings this shard collects:
+
+```json
+{
+  "mode": "greeks",
+  "instruments": [{"vendor_key": "NSE_FO|12345", "instrument_id": 1}],
+  "underlying_ids": [100],
+  "expiries": [{"expiry_id": 10, "underlying_id": 100,
+                "underlying_vendor_key": "NSE_INDEX|Nifty 50",
+                "expiry": "2026-03-05", "expected_leg_count": 120}]
+}
+```
+
+There is no default universe, and a malformed document stops the process rather than
+being partially applied: a partly parsed universe collects a *different* instrument set
+than the operator asked for, and nothing downstream can tell the difference. The expiry
+bindings are also what lets gap recovery turn a canonical `expiry_id` back into the
+vendor key and date the REST re-fetch needs.
+
+`UPSTOX_ACCESS_TOKEN` is read in-process by the `ingestor` role only and is never
+returned to a client or written to a log.
 
 **Staleness budgets are configuration, carried in `staleness_policy_version` and therefore
 part of `build_context_id`** (`04-MARKETSTATE.md` §1) — changing a budget yields a new

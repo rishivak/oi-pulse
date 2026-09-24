@@ -17,6 +17,7 @@ resumed WS stream deliver the same instant.
 from __future__ import annotations
 
 from collections.abc import Iterable, Sequence
+from decimal import Decimal
 from typing import Any
 
 import sqlalchemy as sa
@@ -37,6 +38,16 @@ from oipulse.persistence.repository import ResolvedBound, TemporalRepository, re
 __all__ = ["PostgresObservationRepository"]
 
 
+def _json_safe(val: Any) -> Any:
+    if isinstance(val, Decimal):
+        return float(val)
+    if isinstance(val, dict):
+        return {str(k): _json_safe(v) for k, v in val.items()}
+    if isinstance(val, (list, tuple)):
+        return [_json_safe(v) for v in val]
+    return val
+
+
 def _identity_values(obs: MarketObservation) -> dict[str, Any]:
     i = obs.identity
     return {
@@ -53,7 +64,7 @@ def _identity_values(obs: MarketObservation) -> dict[str, Any]:
         "content_digest": i.content_digest,
         "received_seq": i.received_seq,
         "supersedes_observation_id": obs.supersedes_observation_id,
-        "raw_extra": obs.raw_extra,
+        "raw_extra": _json_safe(obs.raw_extra) if obs.raw_extra else {},
     }
 
 
@@ -127,22 +138,27 @@ class PostgresObservationRepository(TemporalRepository[MarketObservation]):
         for table, rows in batches.items():
             if not rows:
                 continue
-            stmt = pg_insert(table).values(rows)
+            # Two names, not one rebound: `.returning()` produces a `ReturningInsert`,
+            # a different type from the `Insert` it was called on. Reusing the variable
+            # made the statement's static type the pre-RETURNING one, which is how a
+            # dropped RETURNING clause could have gone unnoticed -- and RETURNING is
+            # what makes the inserted count exact rather than an estimate.
+            insert_stmt = pg_insert(table).values(rows)
             # DO NOTHING across every identity tier at once: whichever partial unique
             # index the row falls under, a repeat is silently dropped.
-            stmt = stmt.on_conflict_do_nothing().returning(table.c.id)
-            result = await self._conn.execute(stmt)
+            returning_stmt = insert_stmt.on_conflict_do_nothing().returning(table.c.id)
+            result = await self._conn.execute(returning_stmt)
             inserted += len(result.fetchall())
 
         return WriteResult(inserted=inserted, duplicates=submitted - inserted)
 
     def _fetch(
-        self, bound: ResolvedBound, **criteria: Any
+        self, bound: ResolvedBound, **criteria: object
     ) -> Sequence[MarketObservation]:  # pragma: no cover - async variant is used
         raise NotImplementedError("use fetch_async; this repository is async")
 
     async def fetch_async(
-        self, bound: TemporalBound, table: sa.Table, **criteria: Any
+        self, bound: TemporalBound, table: sa.Table, **criteria: object
     ) -> Sequence[Any]:
         """Read under a temporal bound.
 

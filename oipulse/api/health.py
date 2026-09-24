@@ -43,6 +43,19 @@ class ReadinessRegistry:
     def register(self, name: str, probe: Callable[[], Awaitable[bool]]) -> None:
         self._checks.append(ReadinessCheck(name, probe))
 
+    def reset(self) -> None:
+        """Drop every registered probe.
+
+        The registry is a module singleton, so building a second application -- which
+        every test that calls `create_app` does -- would otherwise stack duplicate
+        probes and make readiness do the same I/O several times per request.
+        """
+        self._checks.clear()
+
+    @property
+    def names(self) -> tuple[str, ...]:
+        return tuple(check.name for check in self._checks)
+
     async def evaluate(self) -> dict[str, bool]:
         return {check.name: await check.probe() for check in self._checks}
 

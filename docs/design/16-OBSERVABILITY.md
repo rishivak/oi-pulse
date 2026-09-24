@@ -169,6 +169,21 @@ reconciliation**; `api` requires DB and Redis.
 
 A `trader` that cannot reconcile is **not ready** and must not accept intents.
 
+**Phase 2 implementation state** (`oipulse/observability/readiness.py`). Three probes are
+registered for every role: PostgreSQL (`SELECT 1`), Redis (`PING`) and the role's local
+runtime dependencies, each bounded by a 2-second timeout and each reporting its own
+reason on failure. Phase 1 registered none, so `/ops/ready` answered "ready" with an
+empty check set and an API with an unreachable database still took traffic.
+
+The role-specific additions above are **not yet implemented** and are not silently
+treated as satisfied: `ingestor` WS authentication lands with the live feed, `processor`
+recency with Phase 3, `trader` reconciliation with Phase 10.
+
+Provider market-data availability is deliberately **not** part of `api` readiness. It is
+not required by this section, and if it were, every Upstox outage — and every closed
+market, which is most of the day — would withdraw the whole API from rotation. Feed
+health is surfaced through data-quality issues and metrics instead.
+
 ---
 
 ## 6. Alerting

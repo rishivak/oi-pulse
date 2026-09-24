@@ -10,11 +10,14 @@ require a schema rollback.
 
 from __future__ import annotations
 
+import asyncio
 import os
 from logging.config import fileConfig
 
 from alembic import context
-from sqlalchemy import engine_from_config, pool
+from sqlalchemy import pool
+from sqlalchemy.engine import Connection
+from sqlalchemy.ext.asyncio import async_engine_from_config
 
 config = context.config
 
@@ -45,14 +48,30 @@ def run_migrations_offline() -> None:
         context.run_migrations()
 
 
-def run_migrations_online() -> None:
+def _run(connection: Connection) -> None:
+    context.configure(connection=connection, target_metadata=target_metadata)
+    with context.begin_transaction():
+        context.run_migrations()
+
+
+async def _run_async() -> None:
     section = config.get_section(config.config_ini_section) or {}
     section["sqlalchemy.url"] = _database_url()
-    connectable = engine_from_config(section, prefix="sqlalchemy.", poolclass=pool.NullPool)
-    with connectable.connect() as connection:
-        context.configure(connection=connection, target_metadata=target_metadata)
-        with context.begin_transaction():
-            context.run_migrations()
+    connectable = async_engine_from_config(section, prefix="sqlalchemy.", poolclass=pool.NullPool)
+    async with connectable.connect() as connection:
+        await connection.run_sync(_run)
+    await connectable.dispose()
+
+
+def run_migrations_online() -> None:
+    """Run through the async driver.
+
+    `asyncpg` is the project's only PostgreSQL driver, so the migration path uses it
+    too rather than pulling in a second, synchronous one. `run_sync` is the documented
+    bridge: alembic's migration context is synchronous and runs inside the async
+    connection, so no behaviour changes -- only the transport.
+    """
+    asyncio.run(_run_async())
 
 
 if context.is_offline_mode():
