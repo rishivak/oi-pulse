@@ -14,6 +14,7 @@ import unittest
 from datetime import timedelta
 from decimal import Decimal
 from pathlib import Path
+from typing import Any
 
 from oipulse.backtest.result import BacktestExecutionMetadata
 from oipulse.backtest.risk import UNCONSTRAINED_RISK, RiskGate, RiskVerdict
@@ -524,6 +525,214 @@ class TestExecutionMetadataDefault(unittest.TestCase):
         metadata = BacktestExecutionMetadata()
         self.assertIsNone(metadata.executed_at)
         self.assertIsNone(metadata.duration)
+
+
+class MockReplaySession:
+    def __init__(self, session_id: str, context: Any, status_str: str = "created"):
+        from oipulse.replay.engine import ReplayProgress
+        from oipulse.replay.timeline import ReplayStep
+
+        self.session_id = session_id
+        self.context = context
+        self.status = status_str
+        self.timeline = fx.timeline(fx.observations())
+        self.progress = ReplayProgress()
+        self.current_step = ReplayStep(1, at(1), at(1))
+        from tests.phase3._fixtures import UNDERLYING
+
+        self._state = fx.service(fx.observations()).get_state(UNDERLYING, at(1), at(1))
+
+    def state_at(self, step: Any, underlying_id: int) -> Any:
+        from oipulse.replay.engine import SteppedState
+
+        return SteppedState(
+            step=step,
+            underlying_id=underlying_id,
+            state=self._state,
+            from_checkpoint=False,
+        )
+
+    def current_state(self, underlying_id: int | None = None) -> Any:
+        from oipulse.replay.engine import SteppedState
+        from oipulse.replay.timeline import ReplayStep
+
+        step = ReplayStep(1, at(1), at(1))
+        return SteppedState(
+            step=step,
+            underlying_id=100,
+            state=self._state,
+            from_checkpoint=False,
+        )
+
+    def control(self, action: str, body: dict[str, Any] | None = None, **kwargs: Any) -> Any:
+        self.status = action
+        return {"action": action, "status": self.status}
+
+
+class MockReplaySessionManager:
+    def __init__(self) -> None:
+        self._sessions: dict[str, MockReplaySession] = {}
+
+    def list(self) -> list[MockReplaySession]:
+        return list(self._sessions.values())
+
+    def get(self, session_id: str) -> MockReplaySession | None:
+        return self._sessions.get(session_id)
+
+    def create(self, body: dict[str, Any]) -> MockReplaySession:
+        if "universe" not in body or "period" not in body:
+            raise KeyError("missing required field")
+        ctx = fx.context(run_id=body.get("run_id", "test-replay-run"))
+        sess = MockReplaySession(ctx.run_id, ctx)
+        self._sessions[sess.session_id] = sess
+        return sess
+
+
+class MockBacktestRunItem:
+    def __init__(self, run_id: str, result_obj: Any = None):
+        self.run_id = run_id
+        self.status = "completed" if result_obj else "running"
+        self.assumptions = result_obj.assumptions if result_obj else {}
+        self.result = result_obj
+        self.steps_completed = 10
+        self.steps_total = 10
+        self.equity_curve: tuple[Any, ...] = ()
+
+
+class MockBacktestRunManager:
+    def __init__(self) -> None:
+        self._runs: dict[str, MockBacktestRunItem] = {}
+
+    def list(self) -> list[MockBacktestRunItem]:
+        return list(self._runs.values())
+
+    def get(self, run_id: str) -> MockBacktestRunItem | None:
+        return self._runs.get(run_id)
+
+    def create(self, body: dict[str, Any]) -> MockBacktestRunItem:
+        if "strategy_id" not in body or "fill_model" not in body:
+            raise KeyError("missing required field")
+        r_obj = _run()
+        item = MockBacktestRunItem(body.get("run_id", "bt-run-1"), r_obj)
+        self._runs[item.run_id] = item
+        return item
+
+
+class TestReplayAndBacktestFastAPIEndpoints(unittest.TestCase):
+    """End-to-end HTTP tests of /replay and /backtest using FastAPI TestClient."""
+
+    def setUp(self) -> None:
+        from fastapi.testclient import TestClient
+
+        from oipulse.api.app import create_app
+        from oipulse.core.config import Settings
+
+        self.settings = Settings(
+            app_env="development",
+            role="api",
+            log_level="INFO",
+            instance_id="test-api-1",
+            database_url="postgresql+asyncpg://test:test@localhost:5432/test",
+            redis_url="redis://localhost:6379/0",
+            session_secret_key="a" * 32,
+            token_encryption_key="b" * 32,
+        )
+        self.app = create_app(self.settings)
+        self.client = TestClient(self.app)
+
+    def test_replay_unconfigured_manager_returns_503(self) -> None:
+        self.app.state.replay_sessions = None
+        self.assertEqual(self.client.get("/replay/sessions").status_code, 503)
+
+    def test_backtest_unconfigured_manager_returns_503(self) -> None:
+        self.app.state.backtest_runs = None
+        self.assertEqual(self.client.get("/backtest/runs").status_code, 503)
+
+    def test_replay_full_flow(self) -> None:
+        mgr = MockReplaySessionManager()
+        self.app.state.replay_sessions = mgr
+
+        # Create
+        create_resp = self.client.post(
+            "/replay/sessions",
+            json={
+                "run_id": "replay-sess-1",
+                "universe": [100],
+                "period": {
+                    "start": at(0).isoformat(),
+                    "end": at(10).isoformat(),
+                },
+            },
+        )
+        self.assertEqual(create_resp.status_code, 201)
+
+        # List
+        list_resp = self.client.get("/replay/sessions")
+        self.assertEqual(list_resp.status_code, 200)
+        self.assertEqual(len(list_resp.json()["data"]), 1)
+
+        # Get
+        get_resp = self.client.get("/replay/sessions/replay-sess-1")
+        self.assertEqual(get_resp.status_code, 200)
+
+        # Control - valid
+        ctrl_resp = self.client.post(
+            "/replay/sessions/replay-sess-1/control",
+            json={"action": "step"},
+        )
+        self.assertEqual(ctrl_resp.status_code, 200)
+
+        # Control - invalid action
+        bad_ctrl = self.client.post(
+            "/replay/sessions/replay-sess-1/control",
+            json={"action": "buy_market_order"},
+        )
+        self.assertEqual(bad_ctrl.status_code, 422)
+
+        # State
+        state_resp = self.client.get(
+            "/replay/sessions/replay-sess-1/state", params={"underlying_id": 100}
+        )
+        self.assertEqual(state_resp.status_code, 200)
+        self.assertIn("data", state_resp.json())
+
+    def test_backtest_full_flow(self) -> None:
+        mgr = MockBacktestRunManager()
+        self.app.state.backtest_runs = mgr
+
+        # Create
+        create_resp = self.client.post(
+            "/backtest/runs",
+            json={
+                "run_id": "bt-run-1",
+                "strategy_id": "BUY_ONCE",
+                "fill_model": {"latency_seconds": 1.0},
+            },
+        )
+        self.assertEqual(create_resp.status_code, 201)
+
+        # List
+        list_resp = self.client.get("/backtest/runs")
+        self.assertEqual(list_resp.status_code, 200)
+        self.assertEqual(len(list_resp.json()["data"]), 1)
+
+        # Get
+        get_resp = self.client.get("/backtest/runs/bt-run-1")
+        self.assertEqual(get_resp.status_code, 200)
+
+        # Results
+        res_resp = self.client.get("/backtest/runs/bt-run-1/results")
+        self.assertEqual(res_resp.status_code, 200)
+        self.assertIn("meta", res_resp.json())
+        self.assertIn("assumptions", res_resp.json()["meta"])
+
+        # Trades
+        trades_resp = self.client.get("/backtest/runs/bt-run-1/trades")
+        self.assertEqual(trades_resp.status_code, 200)
+
+        # Equity curve
+        eq_resp = self.client.get("/backtest/runs/bt-run-1/equity-curve")
+        self.assertEqual(eq_resp.status_code, 200)
 
 
 if __name__ == "__main__":
