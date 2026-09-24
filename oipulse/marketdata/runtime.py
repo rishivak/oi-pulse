@@ -356,24 +356,29 @@ def _install_signal_handlers(loop: asyncio.AbstractEventLoop, runtime: IngestorR
 def load_proto_decoder() -> ProtoFrameDecoder | None:
     """Return the Upstox V3 Protobuf decoder, or None if none is available.
 
-    The single injection point for the provider-owned `.proto`. It returns None today:
-    the official V3 definition is not bundled, the development environment cannot reach
-    `api.upstox.com` to obtain it, and no Protobuf runtime is installable here.
-
-    Returning None rather than a guessed decoder is the whole point. Protobuf field
-    numbers written from memory do not fail loudly -- a wrong number decodes to a
-    plausible value for the wrong field, which then lands in durable market data and
-    is indistinguishable from a real observation.
+    Loads the production decoder built from the official Upstox V3 .proto definition.
     """
-    return None
+    try:
+        from oipulse.marketdata.providers.upstox.decoder import UpstoxV3ProtoDecoder
+
+        return UpstoxV3ProtoDecoder()
+    except Exception as exc:
+        log.warning("failed_to_load_proto_decoder", extra={"error": str(exc)})
+        return None
+
+
+_UNSET = object()
 
 
 def build_v3_feed_client(
-    rest: RestAuthorizer, clock: Clock, sessions: SessionManager
+    rest: RestAuthorizer,
+    clock: Clock,
+    sessions: SessionManager,
+    decoder: ProtoFrameDecoder | None = _UNSET,  # type: ignore[assignment]
 ) -> UpstoxV3FeedClient:
     """Construct the V3 feed client, or refuse with an actionable message."""
-    decoder = load_proto_decoder()
-    if decoder is None:
+    active_decoder = load_proto_decoder() if decoder is _UNSET else decoder
+    if active_decoder is None:
         raise ProtoDecoderUnavailable(
             "the ingestor cannot start: the Upstox V3 market-data feed carries binary "
             "Protobuf and no decoder is available.\n"
@@ -383,7 +388,7 @@ def build_v3_feed_client(
             "discontinued, and parsing a V3 frame as JSON yields no observations "
             "rather than an error."
         )
-    return UpstoxV3FeedClient(rest, clock, sessions, decoder)
+    return UpstoxV3FeedClient(rest, clock, sessions, active_decoder)
 
 
 def parse_universe(document: str) -> IngestorSpec:
