@@ -99,7 +99,7 @@ def stepped_state_to_dict(stepped: SteppedState) -> dict[str, Any]:
 
 
 def progress_to_dict(progress: ReplayProgress) -> dict[str, Any]:
-    body = dict(progress.as_dict())
+    body: dict[str, Any] = dict(progress.as_dict())
     total = progress.checkpoint_hits + progress.checkpoint_misses
     # Reported rather than left to the client to divide: a zero-step run must show
     # 0.0 reuse, not a division error or a silently absent field.
