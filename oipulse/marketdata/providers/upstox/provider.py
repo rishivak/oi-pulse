@@ -11,7 +11,8 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime, time
+from typing import Any, Protocol
 
 from oipulse.core.clock import Clock
 from oipulse.core.ids import ExpiryId, InstrumentId
@@ -27,7 +28,40 @@ from oipulse.observability.logging import get_logger
 
 log = get_logger(__name__)
 
-__all__ = ["ChainSnapshot", "InstrumentResolver", "UpstoxMarketDataProvider"]
+__all__ = [
+    "ChainSnapshot",
+    "ExpiryBinding",
+    "InstrumentResolver",
+    "RestTransport",
+    "UpstoxMarketDataProvider",
+    "WsTransport",
+]
+
+
+class RestTransport(Protocol):
+    """The REST surface this adapter needs.
+
+    A structural type rather than a concrete import: the adapter is tested with a
+    fixture-backed transport, and typing the dependency as `object` with
+    `# type: ignore[attr-defined]` at each call site suppressed exactly the errors that
+    would catch a signature drift between the two.
+    """
+
+    async def get_option_chain(self, instrument_key: str, expiry: date) -> dict[str, Any]: ...
+
+    async def get_historical_oi(
+        self, instrument_key: str, expiry: date, on: date
+    ) -> dict[str, Any]: ...
+
+
+class WsTransport(Protocol):
+    """The WebSocket surface this adapter needs."""
+
+    def stream(self, vendor_keys: Sequence[str], mode: str) -> AsyncIterator[Any]: ...
+
+
+#: (valid_from, valid_to, instrument_id). `valid_to` None means "still in force".
+_MappingWindow = tuple[datetime, datetime | None, InstrumentId]
 
 
 class InstrumentResolver:
@@ -38,14 +72,14 @@ class InstrumentResolver:
     """
 
     def __init__(self) -> None:
-        self._by_key: dict[str, list[tuple[object, object, InstrumentId]]] = {}
+        self._by_key: dict[str, list[_MappingWindow]] = {}
 
     def register(
         self,
         vendor_key: str,
         instrument_id: InstrumentId,
-        valid_from: object,
-        valid_to: object = None,
+        valid_from: datetime,
+        valid_to: datetime | None = None,
     ) -> None:
         """Register a mapping, closing any open-ended prior one.
 
@@ -59,19 +93,19 @@ class InstrumentResolver:
         """
         existing = self._by_key.setdefault(vendor_key, [])
         for index, (prior_from, prior_to, prior_id) in enumerate(existing):
-            if prior_to is None and prior_from < valid_from:  # type: ignore[operator]
+            if prior_to is None and prior_from < valid_from:
                 existing[index] = (prior_from, valid_from, prior_id)
         existing.append((valid_from, valid_to, instrument_id))
-        existing.sort(key=lambda row: row[0])  # type: ignore[arg-type,return-value]
+        existing.sort(key=lambda row: row[0])
 
-    def resolve(self, vendor_key: str, at: object) -> InstrumentId | None:
+    def resolve(self, vendor_key: str, at: datetime) -> InstrumentId | None:
         """The mapping in force at *at*.
 
         Scans newest-first so the most recent applicable mapping wins even if a
         historical overlap slipped past registration.
         """
         for valid_from, valid_to, iid in reversed(self._by_key.get(vendor_key, ())):
-            if valid_from <= at and (valid_to is None or at < valid_to):  # type: ignore[operator]
+            if valid_from <= at and (valid_to is None or at < valid_to):
                 return iid
         return None
 
@@ -82,8 +116,8 @@ class ChainSnapshot:
 
     underlying_id: InstrumentId
     expiry_id: ExpiryId
-    observed_at: object
-    ingested_at: object
+    observed_at: datetime
+    ingested_at: datetime
     legs: tuple[MarketObservation, ...]
     leg_count: int
     expected_leg_count: int | None
@@ -97,22 +131,58 @@ class ChainSnapshot:
         return self.leg_count >= self.expected_leg_count and not self.rejected
 
 
+@dataclass(frozen=True, slots=True)
+class ExpiryBinding:
+    """Everything needed to re-fetch one expiry's chain from a canonical `ExpiryId`.
+
+    Recovery is triggered by a gap, and a gap only knows canonical ids. Without this
+    binding the provider cannot turn `expiry_id` back into the vendor key and date the
+    REST call needs.
+    """
+
+    expiry_id: ExpiryId
+    underlying_id: InstrumentId
+    underlying_vendor_key: str
+    expiry: date
+    expected_leg_count: int | None = None
+
+
+class UnknownExpiry(LookupError):
+    """Recovery was asked for an expiry the provider has no binding for.
+
+    Raised rather than returning an empty snapshot: an empty chain is indistinguishable
+    from a market with no open interest, and recovery silently producing one would turn
+    a wiring mistake into missing data that looks like real data.
+    """
+
+
 class UpstoxMarketDataProvider:
     """Adapter. Transport in `rest.py`/`ws.py`, shapes in `schemas.py`, mapping here."""
 
     def __init__(
         self,
-        rest_client: object,
+        rest_client: RestTransport,
         clock: Clock,
         resolver: InstrumentResolver,
         sessions: SessionManager,
-        ws_client: object | None = None,
+        ws_client: WsTransport | None = None,
     ) -> None:
         self._rest = rest_client
         self._clock = clock
         self._resolver = resolver
         self._sessions = sessions
         self._ws = ws_client
+        self._expiries: dict[int, ExpiryBinding] = {}
+
+    # ------------------------------------------------------------------ bindings
+
+    def register_expiry(self, binding: ExpiryBinding) -> None:
+        """Bind a canonical `ExpiryId` to the vendor key and date REST needs."""
+        self._expiries[int(binding.expiry_id)] = binding
+
+    @property
+    def bound_expiries(self) -> tuple[int, ...]:
+        return tuple(sorted(self._expiries))
 
     async def fetch_option_chain(
         self,
@@ -123,7 +193,7 @@ class UpstoxMarketDataProvider:
         expected_leg_count: int | None = None,
     ) -> ChainSnapshot:
         """Fetch and normalize one chain into a consistency set."""
-        body = await self._rest.get_option_chain(underlying_vendor_key, expiry)  # type: ignore[attr-defined]
+        body = await self._rest.get_option_chain(underlying_vendor_key, expiry)
         return self.build_chain_snapshot(
             body,
             underlying_id=underlying_id,
@@ -133,7 +203,7 @@ class UpstoxMarketDataProvider:
 
     def build_chain_snapshot(
         self,
-        body: dict,
+        body: dict[str, Any],
         *,
         underlying_id: InstrumentId,
         expiry_id: ExpiryId,
@@ -185,11 +255,11 @@ class UpstoxMarketDataProvider:
         expiry: date,
         on: date,
         resolver_keys: dict[str, InstrumentId],
-        session_open: object,
-        session_close: object,
+        session_open: time,
+        session_close: time,
     ) -> Sequence[HistoricalDailyOI]:
         """Date-granular OI. Returns `HistoricalDailyOI`, never a quote (AD-26)."""
-        body = await self._rest.get_historical_oi(underlying_vendor_key, expiry, on)  # type: ignore[attr-defined]
+        body = await self._rest.get_historical_oi(underlying_vendor_key, expiry, on)
         out: list[HistoricalDailyOI] = []
         for entry in body.get("data") or []:
             key = entry.get("instrument_key")
@@ -201,12 +271,40 @@ class UpstoxMarketDataProvider:
                     entry,
                     instrument_id=iid,
                     trade_date=on,
-                    session_open=session_open,  # type: ignore[arg-type]
-                    session_close=session_close,  # type: ignore[arg-type]
+                    session_open=session_open,
+                    session_close=session_close,
                     clock=self._clock,
                 )
             )
         return out
+
+    async def fetch_recovery_chain(self, expiry_id: int) -> ChainSnapshot:
+        """Out-of-band re-fetch of one expiry's chain after a gap.
+
+        The collector calls this when `SessionManager` reports a discontinuity. It was
+        previously absent from this class: the collector typed its provider as `object`
+        and suppressed the resulting `attr-defined` error, so the missing method
+        surfaced only at runtime, as an `AttributeError` caught by the collector's
+        broad `except` and logged as `recovery_fetch_failed`. Recovery would have been
+        permanently dead while reporting itself merely as a failed attempt.
+
+        Deliberately the same code path as the routine snapshot fetch. A separate
+        recovery path would be exercised only during incidents, which is the worst time
+        to discover it diverged.
+        """
+        binding = self._expiries.get(int(expiry_id))
+        if binding is None:
+            raise UnknownExpiry(
+                f"expiry_id {expiry_id} has no vendor binding; "
+                f"call register_expiry() during collector wiring"
+            )
+        return await self.fetch_option_chain(
+            binding.underlying_vendor_key,
+            binding.underlying_id,
+            binding.expiry_id,
+            binding.expiry,
+            expected_leg_count=binding.expected_leg_count,
+        )
 
     async def stream(
         self, vendor_keys: Sequence[str], mode: str
@@ -215,7 +313,7 @@ class UpstoxMarketDataProvider:
         if self._ws is None:
             raise RuntimeError("no websocket client configured")
 
-        async for frame in self._ws.stream(vendor_keys, mode):  # type: ignore[attr-defined]
+        async for frame in self._ws.stream(vendor_keys, mode):
             session = self._sessions.current
             if session is None:
                 continue

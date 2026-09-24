@@ -23,7 +23,7 @@ from __future__ import annotations
 import abc
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Any
+from datetime import datetime
 
 from oipulse.core.errors import TemporalBoundError, UnboundedQueryError
 from oipulse.core.timemode import (
@@ -45,9 +45,9 @@ class ResolvedBound:
     cannot quietly implement `knowledge_at` as `observed_at <= t` and lose the guarantee.
     """
 
-    observed_at_max: Any
-    ingested_at_max: Any
-    available_at_max: Any | None
+    observed_at_max: datetime
+    ingested_at_max: datetime
+    available_at_max: datetime | None
     mode: str
 
     @property
@@ -113,7 +113,7 @@ class TemporalRepository[T](abc.ABC):
     #: mode for them (`12-API_SPEC.md` §2).
     supports_availability: bool = False
 
-    def fetch(self, bound: TemporalBound, **criteria: Any) -> Sequence[T]:
+    def fetch(self, bound: TemporalBound, **criteria: object) -> Sequence[T]:
         resolved = resolve_bound(bound)
         if resolved.filters_availability and not self.supports_availability:
             raise TemporalBoundError(
@@ -124,6 +124,6 @@ class TemporalRepository[T](abc.ABC):
         return self._fetch(resolved, **criteria)
 
     @abc.abstractmethod
-    def _fetch(self, bound: ResolvedBound, **criteria: Any) -> Sequence[T]:
+    def _fetch(self, bound: ResolvedBound, **criteria: object) -> Sequence[T]:
         """Apply *bound* to storage. Implemented per store in Phase 2 and later."""
         raise NotImplementedError

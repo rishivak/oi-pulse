@@ -22,7 +22,7 @@ from oipulse.core.timemode import TemporalBound
 from oipulse.marketdata.observations import MarketObservation, ObservationKind
 from oipulse.persistence.repository import ResolvedBound, TemporalRepository, resolve_bound
 
-__all__ = ["InMemoryObservationStore", "WriteResult"]
+__all__ = ["AsyncSinkAdapter", "InMemoryObservationStore", "WriteResult"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -131,3 +131,26 @@ class InMemoryObservationStore(TemporalRepository[MarketObservation]):
 
     def all_rows(self) -> tuple[MarketObservation, ...]:
         return tuple(self._rows)
+
+
+class AsyncSinkAdapter:
+    """Presents a synchronous store through the async `ObservationSink` contract.
+
+    The PostgreSQL store writes over an async driver, so the collector's write path is
+    async. The in-memory twin stays synchronous because the offline tests read it
+    directly and gain nothing from an event loop. This adapter is the seam between
+    them, and it exists so the collector has exactly one write contract to satisfy
+    rather than branching on whether the result happens to be awaitable.
+    """
+
+    __slots__ = ("_inner",)
+
+    def __init__(self, inner: InMemoryObservationStore) -> None:
+        self._inner = inner
+
+    async def append(self, observations: Iterable[MarketObservation]) -> WriteResult:
+        return self._inner.append(observations)
+
+    @property
+    def inner(self) -> InMemoryObservationStore:
+        return self._inner

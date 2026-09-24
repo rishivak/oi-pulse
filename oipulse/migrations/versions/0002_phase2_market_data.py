@@ -302,11 +302,6 @@ def upgrade() -> None:
         postgresql_partition_by="RANGE (observed_at)",
     )
 
-    anchor = _partition_anchor()
-    for table in _PARTITIONED:
-        _create_daily_partitions(table, anchor, _INITIAL_PARTITION_DAYS)
-        _create_identity_indexes(table, partitioned=True)
-
     # Depth is partitioned daily alongside quotes and greeks: same volume profile.
     # JSONB levels rather than a row per level — depth is written and read whole.
     op.create_table(
@@ -318,8 +313,25 @@ def upgrade() -> None:
         sa.PrimaryKeyConstraint("id", "observed_at"),
         postgresql_partition_by="RANGE (observed_at)",
     )
-    _create_daily_partitions("obs_depth", _partition_anchor(), _INITIAL_PARTITION_DAYS)
-    _create_identity_indexes("obs_depth", partitioned=True)
+
+    # ---------------------------------------------------------------------------
+    # Partitions and indexes for EVERY partitioned parent, after ALL of them exist.
+    #
+    # PostgreSQL requires strict ordering: parent table -> columns/constraints ->
+    # partitions -> indexes. An earlier revision of this file ran this loop before
+    # `obs_depth` was created and then partitioned it a second time explicitly, so
+    # the migration failed with `relation "obs_depth" does not exist` and would have
+    # created duplicate indexes had it got past that.
+    #
+    # One loop, after all parents, driven by `_PARTITIONED`. Adding a partitioned
+    # table now means creating it above and adding its name to that tuple — the
+    # ordering is structural rather than something each new table has to remember,
+    # and tools/check_migration_order.py fails the build if a parent is missing.
+    # ---------------------------------------------------------------------------
+    anchor = _partition_anchor()
+    for table in _PARTITIONED:
+        _create_daily_partitions(table, anchor, _INITIAL_PARTITION_DAYS)
+        _create_identity_indexes(table, partitioned=True)
 
     # OHLC and index are monthly in the design (`02` §9) and low volume here, so they
     # are created unpartitioned in Phase 2. Partitioning them is a forward migration

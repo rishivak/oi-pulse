@@ -19,6 +19,7 @@ from fastapi import FastAPI
 from oipulse.api.health import registry, router
 from oipulse.core.config import Settings
 from oipulse.observability.logging import get_logger
+from oipulse.observability.readiness import register_dependency_probes
 
 __all__ = ["create_app"]
 
@@ -42,12 +43,18 @@ def create_app(settings: Settings) -> FastAPI:
 
     app.include_router(router)
 
-    # Readiness probes are registered per role as capability lands: `ingestor` an
-    # authenticated feed, `processor` recent observations, `trader` a clean
-    # reconciliation. Phase 1 registers none, so /ops/ready reports ready with an empty
-    # check set — honest, because there is nothing yet that could be unready.
+    # Readiness covers this process's own dependencies: PostgreSQL (durable truth),
+    # Redis (coordination) and the packages the role needs locally. Phase 1 registered
+    # nothing, so /ops/ready answered "ready" with an empty check set — technically
+    # honest then, but it meant an API with an unreachable database still took traffic.
+    #
+    # Provider market-data availability is deliberately absent. The approved design does
+    # not make it a readiness dependency, and if it were, every Upstox outage — and
+    # every closed market — would withdraw the whole API from rotation.
     app.state.settings = settings
+    registry.reset()
     app.state.readiness = registry
+    app.state.readiness_checks = register_dependency_probes(registry, settings, settings.role)
 
     @app.on_event("startup")
     async def _log_startup() -> None:

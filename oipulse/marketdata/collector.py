@@ -23,9 +23,10 @@ Ordering of operations is deliberate:
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable, Sequence
+from collections.abc import AsyncIterator, Callable, Iterable, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
+from typing import Protocol
 
 from oipulse.core.clock import Clock
 from oipulse.core.errors import OIPulseError
@@ -35,6 +36,7 @@ from oipulse.marketdata.lifecycle import GapRecord, SessionManager
 from oipulse.marketdata.observations import MarketObservation
 from oipulse.marketdata.ratelimit import RateLimitGovernor
 from oipulse.marketdata.recovery import RecoveryPlan, plan_recovery
+from oipulse.marketdata.store.memory import WriteResult
 from oipulse.marketdata.subscription import (
     CapacityResult,
     CapacityVerdict,
@@ -57,7 +59,43 @@ from oipulse.observability.metrics import (
 
 log = get_logger(__name__)
 
-__all__ = ["CanonicalCollector", "CollectorPlan", "UnsatisfiableUniverse"]
+__all__ = [
+    "CanonicalCollector",
+    "CollectorPlan",
+    "ObservationSink",
+    "RecoveredChain",
+    "StreamingProvider",
+    "UnsatisfiableUniverse",
+]
+
+
+class ObservationSink(Protocol):
+    """The durable write contract the collector depends on.
+
+    Async because the durable implementation is `PostgresObservationStore`, which writes
+    over an async driver. Declaring this structurally rather than typing the constructor
+    parameter `object` matters: the previous `# type: ignore[attr-defined]` at the call
+    site suppressed precisely the error that would have caught `persist()` calling an
+    async `append()` without awaiting it, which silently wrote nothing against the real
+    store while the synchronous in-memory twin kept the tests green.
+    """
+
+    async def append(self, observations: Iterable[MarketObservation]) -> WriteResult: ...
+
+
+class RecoveredChain(Protocol):
+    """Minimal shape of an out-of-band recovery fetch: the legs to re-persist."""
+
+    @property
+    def legs(self) -> Sequence[MarketObservation]: ...
+
+
+class StreamingProvider(Protocol):
+    """The provider surface the collector needs, and no more."""
+
+    def stream(self, vendor_keys: Sequence[str], mode: str) -> AsyncIterator[MarketObservation]: ...
+
+    async def fetch_recovery_chain(self, expiry_id: int) -> RecoveredChain: ...
 
 
 class UnsatisfiableUniverse(OIPulseError):
@@ -84,8 +122,8 @@ class CanonicalCollector:
         planner: SubscriptionPlanner,
         governor: RateLimitGovernor,
         sessions: SessionManager,
-        store: object,
-        provider: object | None = None,
+        store: ObservationSink,
+        provider: StreamingProvider | None = None,
     ) -> None:
         self._clock = clock
         self._planner = planner
@@ -161,11 +199,11 @@ class CanonicalCollector:
 
     # ----------------------------------------------------------------- ingest
 
-    def persist(self, observations: Sequence[MarketObservation]) -> int:
+    async def persist(self, observations: Sequence[MarketObservation]) -> int:
         """Write a batch idempotently and emit the ingestion metrics."""
         if not observations:
             return 0
-        result = self._store.append(observations)  # type: ignore[attr-defined]
+        result = await self._store.append(observations)
 
         for obs in observations:
             METRICS.observe(
@@ -208,13 +246,13 @@ class CanonicalCollector:
         if self._provider is not None and plan.out_of_band:
             for expiry_id in plan.expiry_ids:
                 try:
-                    snapshot = await self._provider.fetch_recovery_chain(expiry_id)  # type: ignore[attr-defined]
+                    snapshot = await self._provider.fetch_recovery_chain(expiry_id)
                 except Exception as exc:
                     log.error("recovery_fetch_failed", extra={"error": str(exc)[:200]})
                     continue
                 # Idempotent: the recovery fetch and the resumed stream may cover the
                 # same instant, and the identity key absorbs the overlap.
-                self.persist(list(snapshot.legs))
+                await self.persist(list(snapshot.legs))
         return plan
 
     @property
@@ -246,10 +284,8 @@ class CanonicalCollector:
                 await asyncio.sleep(30)
                 continue
             try:
-                async for observation in self._provider.stream(  # type: ignore[attr-defined]
-                    plan.vendor_keys, plan.mode.value
-                ):
-                    self.persist([observation])
+                async for observation in self._provider.stream(plan.vendor_keys, plan.mode.value):
+                    await self.persist([observation])
 
                     # Any gap detected while consuming that frame triggers out-of-band
                     # recovery immediately. Detecting a gap and not acting on it leaves

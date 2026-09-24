@@ -38,7 +38,7 @@ __all__ = [
 METADATA = sa.MetaData()
 
 
-def _identity_columns() -> list[sa.Column]:
+def _identity_columns() -> list[sa.Column[object]]:
     """Columns shared by every observation table.
 
     Factored so a new observation kind cannot accidentally omit one — an observation

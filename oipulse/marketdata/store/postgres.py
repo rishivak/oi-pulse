@@ -137,12 +137,12 @@ class PostgresObservationRepository(TemporalRepository[MarketObservation]):
         return WriteResult(inserted=inserted, duplicates=submitted - inserted)
 
     def _fetch(
-        self, bound: ResolvedBound, **criteria: Any
+        self, bound: ResolvedBound, **criteria: object
     ) -> Sequence[MarketObservation]:  # pragma: no cover - async variant is used
         raise NotImplementedError("use fetch_async; this repository is async")
 
     async def fetch_async(
-        self, bound: TemporalBound, table: sa.Table, **criteria: Any
+        self, bound: TemporalBound, table: sa.Table, **criteria: object
     ) -> Sequence[Any]:
         """Read under a temporal bound.
 
