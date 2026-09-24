@@ -23,6 +23,7 @@ from __future__ import annotations
 import asyncio
 import os
 import subprocess
+import sys
 import unittest
 import uuid
 from collections.abc import Callable, Coroutine
@@ -97,7 +98,7 @@ class TestMigrationsApply(unittest.TestCase):
             "OIPULSE_PARTITION_ANCHOR": "2026-01-01",
         }
         return subprocess.run(
-            ["alembic", *args], cwd=REPO, env=env, capture_output=True, text=True, check=False
+            [sys.executable, "-m", "alembic", *args], cwd=REPO, env=env, capture_output=True, text=True, check=False
         )
 
     def _upgrade_head(self) -> None:

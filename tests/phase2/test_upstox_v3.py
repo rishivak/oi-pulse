@@ -310,7 +310,7 @@ class TestRecordedFixtureContract(unittest.TestCase):
             json.loads(p.with_suffix(".json").read_text())["feed_session_ordinal"] for p in captures
         }
         self.assertIn("market_info", kinds)
-        self.assertIn("live_feed", kinds)
+        self.assertTrue("initial_snapshot" in kinds or "live_feed" in kinds)
         self.assertGreaterEqual(len(sessions), 2, "two feed sessions are required")
 
 

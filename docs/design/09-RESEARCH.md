@@ -64,6 +64,7 @@ warning:
 ```python
 class FeatureAccessError(Exception): ...
 
+
 def get_feature(self, feature_id, version, at: Timestamp) -> MetricValue:
     mv = self._lookup(feature_id, version, at)
     if mv.available_at > at:

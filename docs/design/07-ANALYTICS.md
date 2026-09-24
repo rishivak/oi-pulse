@@ -42,7 +42,7 @@ Every metric the system can produce is declared. Nothing computes off-registry.
     identifier="PUT_OI_MIGRATION",
     version=2,
     definition="Net displacement of put open interest between strikes over the window, "
-               "weighted by OI magnitude and expressed in strike points.",
+    "weighted by OI magnitude and expressed in strike points.",
     inputs=["oi_by_strike(PE)"],
     formula="sum(oi_delta_s * (s - s_ref)) / sum(|oi_delta_s|)",
     units="strike_points",
