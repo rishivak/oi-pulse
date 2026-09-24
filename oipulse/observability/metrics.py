@@ -15,7 +15,12 @@ import threading
 from collections import defaultdict
 from dataclasses import dataclass, field
 
-__all__ = ["METRICS", "MetricsRegistry"]
+__all__ = [
+    "METRICS",
+    "MetricsRegistry",
+    "record_feature_computed",
+    "record_feature_skipped",
+]
 
 #: (metric name, sorted label pairs). Named because it appears in four signatures and
 #: a bare `tuple` there is an implicit Any under mypy --strict.
@@ -130,4 +135,51 @@ OBSERVATION_IDENTITY_CONFIDENCE = "observation_identity_confidence"
 CHAIN_COVERAGE_RATIO = "chain_coverage_ratio"
 DQ_ISSUES = "data_quality_issues_total"
 
+# --- Phase 4 analytics (`16-OBSERVABILITY.md` §3 and the feature-availability rows).
+ANALYTICS_COMPUTE_DURATION = "analytics_compute_duration_seconds"
+ANALYTICS_SKIPPED = "analytics_skipped_total"
+FEATURE_UNAVAILABLE = "feature_unavailable_total"
+#: `available_at - lookback_end`. Confirms features do not become available before
+#: their window closes.
+FEATURE_AVAILABILITY_LAG = "feature_availability_lag_seconds"
+#: `available_at - last_input_available_at`. Confirms availability tracks **input
+#: readiness** rather than market time (`07-ANALYTICS.md` §3).
+FEATURE_INPUT_READINESS_LAG = "feature_input_readiness_lag_seconds"
+
 METRICS = MetricsRegistry()
+
+
+def record_feature_computed(
+    feature_id: str,
+    version: int,
+    *,
+    duration_seconds: float,
+    availability_lag_seconds: float,
+    input_readiness_lag_seconds: float | None = None,
+) -> None:
+    """Record one successful feature computation.
+
+    Takes primitives, not an analytics object. `analytics/` may not import this module
+    -- the registry below is process-global mutable state, which the purity contract
+    forbids -- so the caller that owns the impure side of the pipeline translates an
+    `ExecutionReport` into these calls. Keeping the argument types primitive is what
+    keeps the dependency pointing one way.
+    """
+    labels = {"feature": feature_id, "version": str(version)}
+    METRICS.observe(ANALYTICS_COMPUTE_DURATION, duration_seconds, labels)
+    METRICS.observe(FEATURE_AVAILABILITY_LAG, availability_lag_seconds, labels)
+    if input_readiness_lag_seconds is not None:
+        METRICS.observe(FEATURE_INPUT_READINESS_LAG, input_readiness_lag_seconds, labels)
+
+
+def record_feature_skipped(feature_id: str, version: int, reason: str) -> None:
+    """Record a feature that did not compute, labelled by reason.
+
+    Both counters are incremented: `analytics_skipped_total` answers "what is the
+    pipeline not producing", `feature_unavailable_total` answers "how often is this
+    feature absent". A quality rejection that incremented neither would make a feature
+    silently vanish from dashboards.
+    """
+    labels = {"feature": feature_id, "version": str(version), "reason": reason}
+    METRICS.inc(ANALYTICS_SKIPPED, labels)
+    METRICS.inc(FEATURE_UNAVAILABLE, {"feature": feature_id, "version": str(version)})

@@ -24,6 +24,7 @@ from __future__ import annotations
 
 from fastapi import FastAPI
 
+from oipulse.api.features import router as features_router
 from oipulse.api.health import registry, router
 from oipulse.api.market_state import router as market_router
 from oipulse.core.config import Settings
@@ -56,6 +57,9 @@ def create_app(settings: Settings) -> FastAPI:
     # is what keeps live assembly and historical reconstruction from drifting apart
     # (`04-MARKETSTATE.md` §5).
     app.include_router(market_router)
+    # Phase 4. Serving the registry is what makes conventions never implicit: a user
+    # hovering GEX sees the dealer convention in force rather than reading the source.
+    app.include_router(features_router)
 
     # Readiness covers this process's own dependencies: PostgreSQL (durable truth),
     # Redis (coordination) and the packages the role needs locally. Phase 1 registered

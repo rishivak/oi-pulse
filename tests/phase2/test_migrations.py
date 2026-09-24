@@ -76,6 +76,10 @@ PHASE3_PARTITIONED = (
     "state_checkpoint_expiries",
 )
 
+#: Phase 4 analytics tables (`0004_phase4_analytics`). Also prunable.
+PHASE4_TABLES = ("metric_values", "interp_labels", "metric_oi_migrations")
+PHASE4_PARTITIONED = PHASE4_TABLES
+
 
 def _tables(path: Path, function: str, call: str) -> list[str]:
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=path.name)
@@ -115,14 +119,15 @@ class TestMigrationChain(unittest.TestCase):
                 "0001_phase1_sys_tables",
                 "0002_phase2_market_data",
                 "0003_phase3_marketstate",
+                "0004_phase4_analytics",
             ],
-            "the chain must run legacy -> Phase 1 -> Phase 2 -> Phase 3 with no branch",
+            "the chain must run legacy -> Phase 1 -> 2 -> 3 -> 4 with no branch",
         )
 
     def test_exactly_one_head(self) -> None:
         downs = {rev.down_revision for rev in self.chain}
         heads = [rev.revision for rev in self.chain if rev.revision not in downs]
-        self.assertEqual(heads, ["0003_phase3_marketstate"])
+        self.assertEqual(heads, ["0004_phase4_analytics"])
 
     def test_upgrading_from_the_legacy_revision_reaches_phase_2(self) -> None:
         """A database stamped at `002` must have a path to head without manual edits."""
@@ -138,6 +143,7 @@ class TestMigrationChain(unittest.TestCase):
                 "0001_phase1_sys_tables",
                 "0002_phase2_market_data",
                 "0003_phase3_marketstate",
+                "0004_phase4_analytics",
             ],
         )
 
@@ -219,12 +225,36 @@ class TestTableInventory(unittest.TestCase):
         self.assertIn("uq_state_checkpoints_identity", source)
         self.assertIn("uq_state_build_contexts_digest", source)
 
+    def test_phase_4_creates_exactly_the_analytics_tables(self) -> None:
+        created = _tables(V2 / "0004_phase4_analytics.py", "upgrade", "create_table")
+        self.assertEqual(sorted(created), sorted(PHASE4_TABLES))
+        self.assertEqual(len(created), len(set(created)), "no table created twice")
+
+    def test_phase_4_metric_identity_includes_version_horizon_and_context(self) -> None:
+        """Two metrics for one observed_at under different horizons are different
+        values; a key omitting either would collapse them."""
+        source = (V2 / "0004_phase4_analytics.py").read_text(encoding="utf-8")
+        for column in (
+            '"feature_id"',
+            '"feature_version"',
+            '"scope_kind"',
+            '"scope_ref"',
+            '"observed_at"',
+            '"knowledge_horizon"',
+            '"build_context_id"',
+        ):
+            self.assertIn(column, source)
+        self.assertIn("uq_metric_values_identity", source)
+        # The availability invariant is enforced by the database, not only by code.
+        self.assertIn("available_at >= computed_at", source)
+
     def test_downgrade_mirrors_upgrade_in_all_revisions(self) -> None:
         """A downgrade that forgets a table leaves a schema the next upgrade cannot build."""
         for name in (
             "0001_phase1_sys_tables.py",
             "0002_phase2_market_data.py",
             "0003_phase3_marketstate.py",
+            "0004_phase4_analytics.py",
         ):
             with self.subTest(revision=name):
                 created = _tables(V2 / name, "upgrade", "create_table")
@@ -246,6 +276,7 @@ class TestTableInventory(unittest.TestCase):
             "0001_phase1_sys_tables.py",
             "0002_phase2_market_data.py",
             "0003_phase3_marketstate.py",
+            "0004_phase4_analytics.py",
         ):
             source = (V2 / name).read_text(encoding="utf-8")
             for table in legacy:

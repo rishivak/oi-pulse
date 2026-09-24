@@ -151,16 +151,17 @@ class TestMigrationsApply(unittest.TestCase):
         """
         self._upgrade_head()
 
-    def test_phase_1_2_and_3_tables_exist_after_upgrade(self) -> None:
+    def test_every_phase_table_exists_after_upgrade(self) -> None:
         from tests.phase2.test_migrations import (
             PHASE1_TABLES,
             PHASE2_TABLES,
             PHASE3_TABLES,
+            PHASE4_TABLES,
         )
 
         self._upgrade_head()
         present = self._tables()
-        for table in (*PHASE1_TABLES, *PHASE2_TABLES, *PHASE3_TABLES):
+        for table in (*PHASE1_TABLES, *PHASE2_TABLES, *PHASE3_TABLES, *PHASE4_TABLES):
             with self.subTest(table=table):
                 self.assertIn(table, present)
 
@@ -184,7 +185,11 @@ class TestMigrationsApply(unittest.TestCase):
 
     def test_partitions_exist_for_every_partitioned_parent(self) -> None:
         """A missing partition is otherwise discovered by a failed insert mid-session."""
-        from tests.phase2.test_migrations import PARTITIONED_TABLES, PHASE3_PARTITIONED
+        from tests.phase2.test_migrations import (
+            PARTITIONED_TABLES,
+            PHASE3_PARTITIONED,
+            PHASE4_PARTITIONED,
+        )
 
         self._upgrade_head()
         counts = dict(
@@ -196,7 +201,7 @@ class TestMigrationsApply(unittest.TestCase):
                 "GROUP BY parent.relname"
             )
         )
-        for table in (*PARTITIONED_TABLES, *PHASE3_PARTITIONED):
+        for table in (*PARTITIONED_TABLES, *PHASE3_PARTITIONED, *PHASE4_PARTITIONED):
             with self.subTest(table=table):
                 self.assertGreater(counts.get(table, 0), 0, f"{table} has no partitions")
 
@@ -226,6 +231,7 @@ class TestMigrationsApply(unittest.TestCase):
             PHASE1_TABLES,
             PHASE2_TABLES,
             PHASE3_TABLES,
+            PHASE4_TABLES,
         )
 
         self._upgrade_head()
@@ -234,13 +240,40 @@ class TestMigrationsApply(unittest.TestCase):
         down = self._alembic("downgrade", "002")
         self.assertEqual(down.returncode, 0, f"{down.stdout}\n{down.stderr}")
         remaining = self._tables()
-        for table in (*PHASE1_TABLES, *PHASE2_TABLES, *PHASE3_TABLES):
+        for table in (*PHASE1_TABLES, *PHASE2_TABLES, *PHASE3_TABLES, *PHASE4_TABLES):
             with self.subTest(table=table):
                 self.assertNotIn(table, remaining, f"{table} survived the downgrade")
 
         again = self._alembic("upgrade", "head")
         self.assertEqual(again.returncode, 0, f"{again.stdout}\n{again.stderr}")
         self.assertEqual(self._tables(), after_upgrade, "re-upgrade must reproduce the schema")
+
+    def test_the_metric_identity_constraint_is_enforced_by_postgres(self) -> None:
+        """`UNIQUE (feature_id, feature_version, scope_kind, scope_ref, observed_at,
+        knowledge_horizon, build_context_id)` — asserted against the live catalogue.
+
+        A constraint present in a `.py` file and absent from the database enforces
+        nothing, and a key silently missing `feature_version` would let v2 of a
+        formula overwrite v1's stored meaning.
+        """
+        self._upgrade_head()
+        rows = self._rows(
+            "SELECT conname, pg_get_constraintdef(oid) FROM pg_constraint "
+            "WHERE conrelid = 'metric_values'::regclass"
+        )
+        definitions = " ".join(definition for _, definition in rows)
+        for column in (
+            "feature_id",
+            "feature_version",
+            "scope_kind",
+            "scope_ref",
+            "observed_at",
+            "knowledge_horizon",
+            "build_context_id",
+        ):
+            with self.subTest(column=column):
+                self.assertIn(column, definitions)
+        self.assertIn("available_at >= computed_at", definitions)
 
 
 if __name__ == "__main__":

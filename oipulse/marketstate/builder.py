@@ -91,6 +91,21 @@ _NSE_CLOSE = time(15, 30)
 _IST_OFFSET_MINUTES = 330
 
 
+class _InputTrail:
+    """Provenance accumulated while a state is assembled.
+
+    Holds both the observation references and their `ingested_at` values. The second
+    is what lets Phase 4 compute `available_at` from input readiness; carrying it here
+    rather than re-reading the store keeps assembly to one pass.
+    """
+
+    __slots__ = ("ingested", "refs")
+
+    def __init__(self) -> None:
+        self.refs: list[str] = []
+        self.ingested: list[datetime] = []
+
+
 class IncoherentTimeRange(OIPulseError):
     """`knowledge_time < market_time` on an API request — rejected (`12-API_SPEC.md` §2).
 
@@ -270,14 +285,14 @@ class StateBuilder:
 
         universe = self._universe.resolve(underlying_id, market_time)
         issues: list[QualityIssue] = []
-        refs: list[str] = []
+        trail = _InputTrail()
         ages: list[timedelta] = []
         breached: set[DataCategory] = set()
 
-        spot = self._build_spot(universe, market_time, bound, issues, refs, ages, breached)
-        futures = self._build_futures(universe, market_time, bound, issues, refs, ages, breached)
+        spot = self._build_spot(universe, market_time, bound, issues, trail, ages, breached)
+        futures = self._build_futures(universe, market_time, bound, issues, trail, ages, breached)
         expiries, merge_count, anchor_at, anchor_ref, anchored_all = self._build_expiries(
-            universe, market_time, bound, issues, refs, ages, breached
+            universe, market_time, bound, issues, trail, ages, breached
         )
 
         coverage = _coverage(expiries)
@@ -322,9 +337,10 @@ class StateBuilder:
             ),
             provenance=Provenance(
                 build_context=self._context,
-                observation_refs=tuple(sorted(refs)),
+                observation_refs=tuple(sorted(trail.refs)),
                 assembled_at=self._clock.now(),
                 source_kinds=tuple(sorted({"observation"})),
+                max_input_ingested_at=(max(trail.ingested) if trail.ingested else None),
             ),
         )
 
@@ -335,13 +351,15 @@ class StateBuilder:
         March must report the ages that held in March, not ages measured from today."""
         return None if observed_at is None else market_time - observed_at
 
-    def _record(
-        self,
-        obs: MarketObservation | None,
-        refs: list[str],
-    ) -> None:
-        if obs is not None:
-            refs.append(f"{obs.kind.value}:{int(obs.instrument_id)}:{obs.observed_at.isoformat()}")
+    def _record(self, obs: MarketObservation | None, trail: _InputTrail) -> None:
+        if obs is None:
+            return
+        trail.refs.append(
+            f"{obs.kind.value}:{int(obs.instrument_id)}:{obs.observed_at.isoformat()}"
+        )
+        # `ingested_at`, not `observed_at`: Phase 4 derives feature availability from
+        # input readiness, and market time is the wrong axis for it (`07` §3).
+        trail.ingested.append(obs.ingested_at)
 
     def _flag_stale(
         self,
@@ -379,7 +397,7 @@ class StateBuilder:
         market_time: datetime,
         bound: TemporalBound,
         issues: list[QualityIssue],
-        refs: list[str],
+        trail: _InputTrail,
         ages: list[timedelta],
         breached: set[DataCategory],
     ) -> SpotView:
@@ -412,7 +430,7 @@ class StateBuilder:
             breached.add(DataCategory.SPOT)
             return SpotView(ltp=None, observed_at=None, age=None)
 
-        self._record(obs, refs)
+        self._record(obs, trail)
         age = self._age(market_time, obs.observed_at)
         if age is not None:
             ages.append(age)
@@ -437,7 +455,7 @@ class StateBuilder:
         market_time: datetime,
         bound: TemporalBound,
         issues: list[QualityIssue],
-        refs: list[str],
+        trail: _InputTrail,
         ages: list[timedelta],
         breached: set[DataCategory],
     ) -> tuple[FuturesLeg, ...]:
@@ -448,7 +466,7 @@ class StateBuilder:
             age = self._age(market_time, obs.observed_at if obs else None)
             if age is not None:
                 ages.append(age)
-            self._record(obs, refs)
+            self._record(obs, trail)
             stale = self._flag_stale(
                 DataCategory.FUTURES, age, market_time, int(contract.id), issues, breached
             )
@@ -472,7 +490,7 @@ class StateBuilder:
         market_time: datetime,
         bound: TemporalBound,
         issues: list[QualityIssue],
-        refs: list[str],
+        trail: _InputTrail,
         ages: list[timedelta],
         breached: set[DataCategory],
     ) -> tuple[tuple[ExpirySlice, ...], int, datetime | None, str | None, bool]:
@@ -501,7 +519,7 @@ class StateBuilder:
                 entry.legs, key=lambda i: (i.strike or Decimal(0), str(i.option_type), int(i.id))
             ):
                 leg = self._build_leg(
-                    contract, entry.expiry_id, market_time, bound, issues, refs, ages, breached
+                    contract, entry.expiry_id, market_time, bound, issues, trail, ages, breached
                 )
                 if leg is None:
                     missing += 1
@@ -554,7 +572,7 @@ class StateBuilder:
         market_time: datetime,
         bound: TemporalBound,
         issues: list[QualityIssue],
-        refs: list[str],
+        trail: _InputTrail,
         ages: list[timedelta],
         breached: set[DataCategory],
     ) -> OptionLeg | None:
@@ -566,8 +584,8 @@ class StateBuilder:
 
         quote = quote_obs if isinstance(quote_obs, QuoteObservation) else None
         greeks = greeks_obs if isinstance(greeks_obs, GreeksObservation) else None
-        self._record(quote_obs, refs)
-        self._record(greeks_obs, refs)
+        self._record(quote_obs, trail)
+        self._record(greeks_obs, trail)
 
         quote_age = self._age(market_time, quote_obs.observed_at if quote_obs else None)
         greeks_age = self._age(market_time, greeks_obs.observed_at if greeks_obs else None)
