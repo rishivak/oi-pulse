@@ -2,10 +2,18 @@
 
 `docs/design/14-DEPLOYMENT.md` §1 and `16-OBSERVABILITY.md` §5.
 
-Phase 1 scope: health and readiness only. `api` performs no business logic — no
-analytics, no strategy evaluation, no trading decisions. It may later serve a
-deterministic `MarketState` reconstruction, which is read-only and shares one
-implementation with the live path; that arrives with Phase 3.
+Phase 1 scope was health and readiness. Phase 3 adds `/market/state`, which serves a
+deterministic `MarketState` reconstruction: read-only, and sharing one implementation
+with the live assembly path rather than having a parallel historical one.
+
+`api` still performs no business logic — no analytics, no strategy evaluation, no
+trading decisions. Requesting a deterministic state reconstruction is explicitly
+permitted (`14-DEPLOYMENT.md` §1); computing a metric from it is not, and does not
+happen here.
+
+A process serving `/market/state` must have `app.state.state_service` set to a
+`StateService`. When it is absent the endpoint answers 503 rather than assembling a
+state from a default it invented.
 
 Requires `fastapi`. `oipulse.run` imports this module **lazily**, only when the `api`
 role is actually started, so configuration validation and role dispatch remain usable on
@@ -17,6 +25,7 @@ from __future__ import annotations
 from fastapi import FastAPI
 
 from oipulse.api.health import registry, router
+from oipulse.api.market_state import router as market_router
 from oipulse.core.config import Settings
 from oipulse.observability.logging import get_logger
 from oipulse.observability.readiness import register_dependency_probes
@@ -42,6 +51,11 @@ def create_app(settings: Settings) -> FastAPI:
     )
 
     app.include_router(router)
+    # Phase 3. `/market/state` serves an assembled MarketState; the endpoint parses and
+    # delegates, and holds no construction path of its own -- the single `build_state`
+    # is what keeps live assembly and historical reconstruction from drifting apart
+    # (`04-MARKETSTATE.md` §5).
+    app.include_router(market_router)
 
     # Readiness covers this process's own dependencies: PostgreSQL (durable truth),
     # Redis (coordination) and the packages the role needs locally. Phase 1 registered

@@ -74,8 +74,13 @@ class TestMigrationChain(unittest.TestCase):
         self.assertEqual(phase1.down_revision, "002")
 
     def test_fresh_database_initialisation_is_preserved(self):
-        """A clean database walks the whole chain from the single root."""
-        self.assertEqual(len(self.chain), 4)
+        """A clean database walks the whole chain from the single root.
+
+        The length is asserted rather than merely the linkage so that adding a
+        revision is a deliberate edit here, visible in review, instead of a silent
+        lengthening nobody notices.
+        """
+        self.assertEqual(len(self.chain), 5)
         self.assertIsNone(self.chain[0].down_revision)
         for previous, current in itertools.pairwise(self.chain):
             self.assertEqual(current.down_revision, previous.revision)

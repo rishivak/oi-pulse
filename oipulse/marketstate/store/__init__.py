@@ -1,0 +1,1 @@
+"""Persistence for MarketState materializations."""

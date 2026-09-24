@@ -62,6 +62,20 @@ PHASE2_TABLES = (
 #: discovered by a failed insert during market hours (`14-DEPLOYMENT.md` §4).
 PARTITIONED_TABLES = ("obs_quotes", "obs_greeks", "obs_depth")
 
+#: Phase 3 materialization tables (`0003_phase3_marketstate`). Prunable: dropping them
+#: loses no history, only recomputation time.
+PHASE3_TABLES = (
+    "state_build_contexts",
+    "state_checkpoints",
+    "state_checkpoint_legs",
+    "state_checkpoint_expiries",
+)
+PHASE3_PARTITIONED = (
+    "state_checkpoints",
+    "state_checkpoint_legs",
+    "state_checkpoint_expiries",
+)
+
 
 def _tables(path: Path, function: str, call: str) -> list[str]:
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=path.name)
@@ -95,14 +109,20 @@ class TestMigrationChain(unittest.TestCase):
         order = [rev.revision for rev in self.chain]
         self.assertEqual(
             order,
-            ["001", "002", "0001_phase1_sys_tables", "0002_phase2_market_data"],
-            "the chain must run legacy -> Phase 1 -> Phase 2 with no branch",
+            [
+                "001",
+                "002",
+                "0001_phase1_sys_tables",
+                "0002_phase2_market_data",
+                "0003_phase3_marketstate",
+            ],
+            "the chain must run legacy -> Phase 1 -> Phase 2 -> Phase 3 with no branch",
         )
 
     def test_exactly_one_head(self) -> None:
         downs = {rev.down_revision for rev in self.chain}
         heads = [rev.revision for rev in self.chain if rev.revision not in downs]
-        self.assertEqual(heads, ["0002_phase2_market_data"])
+        self.assertEqual(heads, ["0003_phase3_marketstate"])
 
     def test_upgrading_from_the_legacy_revision_reaches_phase_2(self) -> None:
         """A database stamped at `002` must have a path to head without manual edits."""
@@ -112,7 +132,14 @@ class TestMigrationChain(unittest.TestCase):
         while cursor in by_down:
             cursor = by_down[cursor].revision
             visited.append(cursor)
-        self.assertEqual(visited, ["0001_phase1_sys_tables", "0002_phase2_market_data"])
+        self.assertEqual(
+            visited,
+            [
+                "0001_phase1_sys_tables",
+                "0002_phase2_market_data",
+                "0003_phase3_marketstate",
+            ],
+        )
 
 
 class TestOperationOrdering(unittest.TestCase):
@@ -174,9 +201,31 @@ class TestTableInventory(unittest.TestCase):
         self.assertEqual(sorted(created), sorted(PHASE2_TABLES))
         self.assertEqual(len(created), len(set(created)), "no table created twice")
 
-    def test_downgrade_mirrors_upgrade_in_both_revisions(self) -> None:
+    def test_phase_3_creates_exactly_the_state_tables(self) -> None:
+        created = _tables(V2 / "0003_phase3_marketstate.py", "upgrade", "create_table")
+        self.assertEqual(sorted(created), sorted(PHASE3_TABLES))
+        self.assertEqual(len(created), len(set(created)), "no table created twice")
+
+    def test_phase_3_checkpoint_identity_is_the_full_tuple(self) -> None:
+        """A key omitting knowledge_horizon would collapse two valid states."""
+        source = (V2 / "0003_phase3_marketstate.py").read_text(encoding="utf-8")
+        for column in (
+            '"underlying_id"',
+            '"observed_at"',
+            '"knowledge_horizon"',
+            '"build_context_id"',
+        ):
+            self.assertIn(column, source)
+        self.assertIn("uq_state_checkpoints_identity", source)
+        self.assertIn("uq_state_build_contexts_digest", source)
+
+    def test_downgrade_mirrors_upgrade_in_all_revisions(self) -> None:
         """A downgrade that forgets a table leaves a schema the next upgrade cannot build."""
-        for name in ("0001_phase1_sys_tables.py", "0002_phase2_market_data.py"):
+        for name in (
+            "0001_phase1_sys_tables.py",
+            "0002_phase2_market_data.py",
+            "0003_phase3_marketstate.py",
+        ):
             with self.subTest(revision=name):
                 created = _tables(V2 / name, "upgrade", "create_table")
                 dropped = _tables(V2 / name, "downgrade", "drop_table")
@@ -193,7 +242,11 @@ class TestTableInventory(unittest.TestCase):
         legacy |= set(
             _tables(LEGACY / "002_phase2_market_data_schema.py", "upgrade", "create_table")
         )
-        for name in ("0001_phase1_sys_tables.py", "0002_phase2_market_data.py"):
+        for name in (
+            "0001_phase1_sys_tables.py",
+            "0002_phase2_market_data.py",
+            "0003_phase3_marketstate.py",
+        ):
             source = (V2 / name).read_text(encoding="utf-8")
             for table in legacy:
                 self.assertNotIn(
