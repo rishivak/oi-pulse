@@ -80,6 +80,11 @@ PHASE3_PARTITIONED = (
 PHASE4_TABLES = ("metric_values", "interp_labels", "metric_oi_migrations")
 PHASE4_PARTITIONED = PHASE4_TABLES
 
+#: Phase 5 signal and alert tables (`0005_phase5_signals`). `alert_rules` holds
+#: configuration rather than a time series, so it is deliberately unpartitioned.
+PHASE5_TABLES = ("signal_signals", "signal_evidence", "alert_rules", "alert_occurrences")
+PHASE5_PARTITIONED = ("signal_signals", "signal_evidence", "alert_occurrences")
+
 
 def _tables(path: Path, function: str, call: str) -> list[str]:
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=path.name)
@@ -120,14 +125,15 @@ class TestMigrationChain(unittest.TestCase):
                 "0002_phase2_market_data",
                 "0003_phase3_marketstate",
                 "0004_phase4_analytics",
+                "0005_phase5_signals",
             ],
-            "the chain must run legacy -> Phase 1 -> 2 -> 3 -> 4 with no branch",
+            "the chain must run legacy -> Phase 1 -> 2 -> 3 -> 4 -> 5 with no branch",
         )
 
     def test_exactly_one_head(self) -> None:
         downs = {rev.down_revision for rev in self.chain}
         heads = [rev.revision for rev in self.chain if rev.revision not in downs]
-        self.assertEqual(heads, ["0004_phase4_analytics"])
+        self.assertEqual(heads, ["0005_phase5_signals"])
 
     def test_upgrading_from_the_legacy_revision_reaches_phase_2(self) -> None:
         """A database stamped at `002` must have a path to head without manual edits."""
@@ -144,6 +150,7 @@ class TestMigrationChain(unittest.TestCase):
                 "0002_phase2_market_data",
                 "0003_phase3_marketstate",
                 "0004_phase4_analytics",
+                "0005_phase5_signals",
             ],
         )
 
@@ -248,6 +255,30 @@ class TestTableInventory(unittest.TestCase):
         # The availability invariant is enforced by the database, not only by code.
         self.assertIn("available_at >= computed_at", source)
 
+    def test_phase_5_creates_exactly_the_signal_and_alert_tables(self) -> None:
+        created = _tables(V2 / "0005_phase5_signals.py", "upgrade", "create_table")
+        self.assertEqual(sorted(created), sorted(PHASE5_TABLES))
+        self.assertEqual(len(created), len(set(created)), "no table created twice")
+
+    def test_phase_5_signal_identity_and_alert_dedup_are_constrained(self) -> None:
+        """The two constraints that make re-processing idempotent."""
+        source = (V2 / "0005_phase5_signals.py").read_text(encoding="utf-8")
+        self.assertIn("uq_signal_signals_identity", source)
+        for column in (
+            '"rule_version"',
+            '"occurrence"',
+            '"knowledge_horizon"',
+            '"build_context_id"',
+            '"config_digest"',
+        ):
+            self.assertIn(column, source)
+        self.assertIn("uq_alert_occurrences_dedup", source)
+        self.assertIn('"dedup_key"', source)
+        # Evidence weight sign is tied to its kind in the database, not only in code.
+        self.assertIn("ck_signal_evidence_weight_sign", source)
+        # 'NONE_OBSERVED' is a positive finding, so the column cannot be NULL.
+        self.assertIn('sa.Column("contradiction_assessment", sa.Text, nullable=False)', source)
+
     def test_downgrade_mirrors_upgrade_in_all_revisions(self) -> None:
         """A downgrade that forgets a table leaves a schema the next upgrade cannot build."""
         for name in (
@@ -255,6 +286,7 @@ class TestTableInventory(unittest.TestCase):
             "0002_phase2_market_data.py",
             "0003_phase3_marketstate.py",
             "0004_phase4_analytics.py",
+            "0005_phase5_signals.py",
         ):
             with self.subTest(revision=name):
                 created = _tables(V2 / name, "upgrade", "create_table")
@@ -277,6 +309,7 @@ class TestTableInventory(unittest.TestCase):
             "0002_phase2_market_data.py",
             "0003_phase3_marketstate.py",
             "0004_phase4_analytics.py",
+            "0005_phase5_signals.py",
         ):
             source = (V2 / name).read_text(encoding="utf-8")
             for table in legacy:

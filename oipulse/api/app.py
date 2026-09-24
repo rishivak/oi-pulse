@@ -24,9 +24,11 @@ from __future__ import annotations
 
 from fastapi import FastAPI
 
+from oipulse.api.alerts import router as alerts_router
 from oipulse.api.features import router as features_router
 from oipulse.api.health import registry, router
 from oipulse.api.market_state import router as market_router
+from oipulse.api.signals import router as signals_router
 from oipulse.core.config import Settings
 from oipulse.observability.logging import get_logger
 from oipulse.observability.readiness import register_dependency_probes
@@ -60,6 +62,11 @@ def create_app(settings: Settings) -> FastAPI:
     # Phase 4. Serving the registry is what makes conventions never implicit: a user
     # hovering GEX sees the dealer convention in force rather than reading the source.
     app.include_router(features_router)
+    # Phase 5. Signals and alerts are separate routers because they are separate
+    # concerns: a signal exists whether or not anyone is listening, and no alert
+    # endpoint mutates signal truth.
+    app.include_router(signals_router)
+    app.include_router(alerts_router)
 
     # Readiness covers this process's own dependencies: PostgreSQL (durable truth),
     # Redis (coordination) and the packages the role needs locally. Phase 1 registered

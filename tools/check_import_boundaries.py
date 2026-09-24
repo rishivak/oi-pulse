@@ -77,6 +77,39 @@ CONTRACTS: tuple[Contract, ...] = (
         ),
     ),
     Contract(
+        name="signals-are-pure",
+        subject="signals",
+        allowed_only=frozenset({"analytics", "marketstate", "core"}),
+        forbidden_modules=frozenset({f"{ROOT_PACKAGE}.core.clock"}),
+        forbidden_external=_DB_AND_IO,
+        rationale=(
+            "Signal rules are pure over RuleContext -- same purity contract as "
+            "analytics, same testability, one implementation across live, replay and "
+            "backtest (08-SIGNALS.md §4). No DB, no HTTP, no clock: a signal's "
+            "available_at derives from its inputs, never from 'now'."
+        ),
+    ),
+    Contract(
+        name="alerts-never-import-signal-internals",
+        subject="alerts",
+        allowed_only=frozenset({"signals", "core"}),
+        forbidden_modules=frozenset(
+            {
+                f"{ROOT_PACKAGE}.signals.evaluation",
+                f"{ROOT_PACKAGE}.signals.lifecycle",
+                f"{ROOT_PACKAGE}.signals.rules",
+                f"{ROOT_PACKAGE}.core.clock",
+            }
+        ),
+        forbidden_external=_DB_AND_IO,
+        rationale=(
+            "Alerts are a delivery concern, not a truth concern. Importing the "
+            "evaluator, the lifecycle table or the rule registry would let delivery "
+            "re-evaluate or transition a signal; a signal must exist unchanged whether "
+            "or not anyone is listening (18-ROADMAP.md Phase 5)."
+        ),
+    ),
+    Contract(
         name="nothing-imports-api",
         subject="*",
         forbidden=frozenset({"api"}),

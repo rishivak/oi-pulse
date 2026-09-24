@@ -61,6 +61,12 @@ jobs:
       - name: Strict-typing subset (stdlib approximation)
         run: python tools/check_typing_strict.py
 
+      # Phase 5. Delivery must not be able to write back to a signal: if it could,
+      # every later query over signals would silently become a query over *delivered*
+      # signals, and the undelivered ones would vanish from analysis.
+      - name: Alerts cannot mutate signal truth
+        run: python tools/check_alert_purity.py
+
       - name: Foundation tests (stdlib only)
         run: python -m unittest discover -s tests -t . -v
 
