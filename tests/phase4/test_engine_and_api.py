@@ -367,5 +367,80 @@ class TestNormalizationMetadata(unittest.TestCase):
                 self.assertIsInstance(item.value, Decimal)
 
 
+class TestFeaturesFastAPIEndpoint(unittest.TestCase):
+    """End-to-end HTTP tests of /features using FastAPI TestClient."""
+
+    def setUp(self):
+        from fastapi.testclient import TestClient
+
+        from oipulse.api.app import create_app
+        from oipulse.core.config import Settings
+
+        self.settings = Settings(
+            app_env="development",
+            role="api",
+            log_level="INFO",
+            instance_id="test-api-1",
+            database_url="postgresql+asyncpg://test:test@localhost:5432/test",
+            redis_url="redis://localhost:6379/0",
+            session_secret_key="a" * 32,
+            token_encryption_key="b" * 32,
+        )
+        self.app = create_app(self.settings)
+        self.client = TestClient(self.app)
+
+    def test_list_features_returns_all_registered(self):
+        resp = self.client.get("/features")
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertEqual(body["meta"]["count"], 54)
+        self.assertEqual(body["meta"]["identifiers"], 54)
+        self.assertIn("data", body)
+
+    def test_list_features_filtered_by_scope(self):
+        resp = self.client.get("/features", params={"scope": "underlying"})
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        for item in body["data"]:
+            self.assertEqual(item["scope"], "underlying")
+
+    def test_get_feature_version_definition(self):
+        resp = self.client.get("/features/PCR/versions/1")
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertEqual(body["data"]["identifier"], "PCR")
+        self.assertEqual(body["data"]["version"], 1)
+        self.assertEqual(body["data"]["units"], "ratio")
+
+    def test_get_unknown_feature_definition_returns_404(self):
+        resp = self.client.get("/features/NONEXISTENT_FEATURE/versions/1")
+        self.assertEqual(resp.status_code, 404)
+
+    def test_feature_values_without_reader_returns_503(self):
+        resp = self.client.get(
+            "/features/PCR/values",
+            params={
+                "scope_kind": "expiry",
+                "scope_ref": "10",
+                "market_time": at(0).isoformat(),
+            },
+        )
+        self.assertEqual(resp.status_code, 503)
+        self.assertIn("no metric_values reader is configured", resp.json()["detail"])
+
+    def test_feature_values_incoherent_time_range_returns_422(self):
+        resp = self.client.get(
+            "/features/PCR/values",
+            params={
+                "scope_kind": "expiry",
+                "scope_ref": "10",
+                "market_time": at(10).isoformat(),
+                "knowledge_time": at(0).isoformat(),
+            },
+        )
+        self.assertEqual(resp.status_code, 422)
+        self.assertIn("precedes market_time", resp.json()["detail"])
+
+
 if __name__ == "__main__":
     unittest.main()

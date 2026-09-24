@@ -195,7 +195,8 @@ def _nearest_delta(legs: tuple[OptionLeg, ...], target: Decimal) -> OptionLeg | 
     if not candidates:
         return None
     return min(
-        sorted(candidates, key=lambda leg: leg.strike), key=lambda leg: abs(leg.delta - target)
+        sorted(candidates, key=lambda leg: leg.strike),
+        key=lambda leg: abs(leg.delta - target) if leg.delta is not None else Decimal("inf"),
     )
 
 

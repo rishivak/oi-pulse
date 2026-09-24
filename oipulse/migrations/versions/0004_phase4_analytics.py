@@ -55,6 +55,11 @@ def _partition_anchor() -> date:
     return date.fromisoformat(override) if override else _PARTITION_ANCHOR
 
 
+def _partition_days() -> int:
+    override = os.environ.get("OIPULSE_PARTITION_DAYS")
+    return int(override) if override else _INITIAL_PARTITION_DAYS
+
+
 def _create_daily_partitions(table: str, start: date, days: int) -> None:
     for offset in range(days):
         day = start + timedelta(days=offset)
@@ -147,8 +152,9 @@ def upgrade() -> None:
 
     # Partitions and indexes only after every parent exists.
     anchor = _partition_anchor()
+    days = _partition_days()
     for table in _PARTITIONED:
-        _create_daily_partitions(table, anchor, _INITIAL_PARTITION_DAYS)
+        _create_daily_partitions(table, anchor, days)
 
     op.create_index(
         "ix_metric_values_lookup",

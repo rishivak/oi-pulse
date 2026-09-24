@@ -96,6 +96,7 @@ class TestMigrationsApply(unittest.TestCase):
             "DATABASE_URL": self.db_url,
             # Deterministic partition window regardless of when CI runs.
             "OIPULSE_PARTITION_ANCHOR": "2026-01-01",
+            "OIPULSE_PARTITION_DAYS": "14",
         }
         return subprocess.run(
             [sys.executable, "-m", "alembic", *args],
