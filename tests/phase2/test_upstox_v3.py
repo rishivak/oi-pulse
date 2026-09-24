@@ -318,55 +318,298 @@ if __name__ == "__main__":
     unittest.main()
 
 
-class TestIngestorRefusesWithoutADecoder(unittest.TestCase):
-    """No decoder means no ingestion. Refusing beats collecting nothing silently."""
+class TestIngestorDecoderWiring(unittest.TestCase):
+    """The decoder is loaded from the official proto and fails closed when missing."""
 
-    def test_build_v3_feed_client_refuses_and_explains(self):
+    def test_build_v3_feed_client_refuses_when_decoder_is_explicitly_none(self):
         from oipulse.marketdata.runtime import ProtoDecoderUnavailable, build_v3_feed_client
 
         with self.assertRaises(ProtoDecoderUnavailable) as ctx:
-            build_v3_feed_client(object(), object(), object())
+            build_v3_feed_client(object(), object(), object(), decoder=None)
         message = str(ctx.exception)
         self.assertIn(".proto", message)
         self.assertIn("no JSON fallback", message)
 
-    def test_the_decoder_injection_point_returns_none_rather_than_a_guess(self):
+    def test_the_decoder_injection_point_returns_the_official_decoder(self):
+        from oipulse.marketdata.providers.upstox.decoder import UpstoxV3ProtoDecoder
         from oipulse.marketdata.runtime import load_proto_decoder
 
-        self.assertIsNone(load_proto_decoder())
+        decoder = load_proto_decoder()
+        self.assertIsNotNone(decoder)
+        self.assertIsInstance(decoder, UpstoxV3ProtoDecoder)
 
-    def test_the_ingestor_exits_with_a_distinct_status(self):
-        """Exit 7 distinguishes "no V3 decoder" from configuration (2) and missing
-        packages (3), so an operator is not sent to fix the wrong thing."""
-        import os
 
-        from oipulse.core.config import Settings
-        from oipulse.instruments.universe import DataMode
-        from oipulse.marketdata.runtime import IngestorSpec, run_ingestor
+class TestUpstoxV3ProtoDecoder(unittest.TestCase):
+    """Comprehensive tests for the official Upstox V3 Protobuf decoder."""
 
-        settings = Settings(
-            app_env="development",
-            role="ingestor",
-            log_level="INFO",
-            instance_id="t",
-            database_url="postgresql+asyncpg://u:p@localhost/db",
-            redis_url="redis://localhost:6379/0",
-            session_secret_key="x" * 48,
-            token_encryption_key="y" * 48,
+    def setUp(self):
+        from oipulse.marketdata.providers.upstox.decoder import UpstoxV3ProtoDecoder
+
+        self.decoder = UpstoxV3ProtoDecoder()
+
+    def test_decode_empty_payload_fails_cleanly(self):
+        from oipulse.marketdata.providers.upstox.decoder import V3ProtobufDecodeError
+
+        with self.assertRaises(V3ProtobufDecodeError) as ctx:
+            self.decoder.decode(b"")
+        self.assertIn("cannot decode empty binary frame", str(ctx.exception))
+
+    def test_decode_malformed_protobuf_fails_cleanly(self):
+        from oipulse.marketdata.providers.upstox.decoder import V3ProtobufDecodeError
+
+        with self.assertRaises(V3ProtobufDecodeError) as ctx:
+            self.decoder.decode(b"not-a-valid-protobuf-payload-garbage-bytes")
+        self.assertIn("malformed protobuf payload", str(ctx.exception))
+
+    def test_decode_market_info_frame(self):
+        from oipulse.marketdata.providers.upstox.proto import MarketDataFeed_pb2
+
+        resp = MarketDataFeed_pb2.FeedResponse()
+        resp.type = MarketDataFeed_pb2.Type.market_info
+        resp.currentTs = 1772697600000
+        resp.marketInfo.segmentStatus["NSE_FO"] = MarketDataFeed_pb2.MarketStatus.NORMAL_OPEN
+        resp.marketInfo.casMarketStatus["NSE_EQ"].status = "NORMAL_OPEN"
+        resp.marketInfo.casMarketStatus["NSE_EQ"].updatedTime = 1772697600000
+
+        messages = self.decoder.decode(resp.SerializeToString())
+        self.assertEqual(len(messages), 1)
+        msg = messages[0]
+        self.assertIs(msg.kind, FeedMessageKind.MARKET_INFO)
+        self.assertIsNone(msg.instrument_key)
+        self.assertFalse(msg.is_market_data)
+        self.assertIn("segment_status", msg.fields)
+        self.assertEqual(msg.fields["segment_status"]["NSE_FO"], "NORMAL_OPEN")
+        self.assertIn("cas_market_status", msg.fields)
+        self.assertEqual(msg.fields["cas_market_status"]["NSE_EQ"]["status"], "NORMAL_OPEN")
+
+    def test_decode_ltpc_frame(self):
+        from decimal import Decimal
+
+        from oipulse.marketdata.providers.upstox.proto import MarketDataFeed_pb2
+
+        resp = MarketDataFeed_pb2.FeedResponse()
+        resp.type = MarketDataFeed_pb2.Type.live_feed
+        resp.currentTs = 1772697600000
+
+        feed = resp.feeds["NSE_FO|CE25000|2026-03-05"]
+        feed.requestMode = MarketDataFeed_pb2.RequestMode.ltpc
+        feed.ltpc.ltp = 125.75
+        feed.ltpc.cp = 120.50
+        feed.ltpc.ltq = 75
+        feed.ltpc.ltt = 1772697600000
+
+        messages = self.decoder.decode(resp.SerializeToString())
+        self.assertEqual(len(messages), 1)
+        msg = messages[0]
+        self.assertIs(msg.kind, FeedMessageKind.LIVE_FEED)
+        self.assertTrue(msg.is_market_data)
+        self.assertEqual(msg.instrument_key, "NSE_FO|CE25000|2026-03-05")
+        self.assertEqual(msg.fields["ltp"], Decimal("125.75"))
+        self.assertEqual(msg.fields["close_price"], Decimal("120.5"))
+        self.assertEqual(msg.fields["last_trade_qty"], 75)
+        self.assertIsNotNone(msg.provider_timestamp)
+
+    def test_decode_first_level_with_greeks_frame(self):
+        from decimal import Decimal
+
+        from oipulse.marketdata.providers.upstox.proto import MarketDataFeed_pb2
+
+        resp = MarketDataFeed_pb2.FeedResponse()
+        resp.type = MarketDataFeed_pb2.Type.live_feed
+        resp.currentTs = 1772697600000
+
+        feed = resp.feeds["NSE_FO|CE25000|2026-03-05"]
+        feed.requestMode = MarketDataFeed_pb2.RequestMode.option_greeks
+        feed.firstLevelWithGreeks.ltpc.ltp = 125.75
+        feed.firstLevelWithGreeks.ltpc.cp = 120.50
+        feed.firstLevelWithGreeks.ltpc.ltt = 1772697600000
+        feed.firstLevelWithGreeks.firstDepth.bidP = 125.50
+        feed.firstLevelWithGreeks.firstDepth.bidQ = 150
+        feed.firstLevelWithGreeks.firstDepth.askP = 126.00
+        feed.firstLevelWithGreeks.firstDepth.askQ = 225
+        feed.firstLevelWithGreeks.optionGreeks.delta = 0.52
+        feed.firstLevelWithGreeks.optionGreeks.theta = -9.14
+        feed.firstLevelWithGreeks.optionGreeks.gamma = 0.00081
+        feed.firstLevelWithGreeks.optionGreeks.vega = 11.2
+        feed.firstLevelWithGreeks.vtt = 50000
+        feed.firstLevelWithGreeks.oi = 450000
+        feed.firstLevelWithGreeks.iv = 14.8
+
+        messages = self.decoder.decode(resp.SerializeToString())
+        self.assertEqual(len(messages), 1)
+        msg = messages[0]
+        self.assertEqual(msg.fields["ltp"], Decimal("125.75"))
+        self.assertEqual(msg.fields["bid_price"], Decimal("125.5"))
+        self.assertEqual(msg.fields["bid_qty"], 150)
+        self.assertEqual(msg.fields["ask_price"], Decimal("126.0"))
+        self.assertEqual(msg.fields["ask_qty"], 225)
+        self.assertEqual(msg.fields["volume"], 50000)
+        self.assertEqual(msg.fields["oi"], 450000)
+        self.assertEqual(msg.fields["iv"], Decimal("14.8"))
+        greeks = msg.fields["option_greeks"]
+        self.assertEqual(greeks["delta"], Decimal("0.52"))
+        self.assertEqual(greeks["theta"], Decimal("-9.14"))
+        self.assertEqual(greeks["gamma"], Decimal("0.00081"))
+        self.assertEqual(greeks["vega"], Decimal("11.2"))
+
+    def test_decode_full_market_feed_frame(self):
+        from decimal import Decimal
+
+        from oipulse.marketdata.providers.upstox.proto import MarketDataFeed_pb2
+
+        resp = MarketDataFeed_pb2.FeedResponse()
+        resp.type = MarketDataFeed_pb2.Type.initial_feed
+        resp.currentTs = 1772697600000
+
+        feed = resp.feeds["NSE_FO|PE25000|2026-03-05"]
+        feed.requestMode = MarketDataFeed_pb2.RequestMode.full_d5
+        mff = feed.fullFeed.marketFF
+        mff.ltpc.ltp = 98.20
+        mff.ltpc.cp = 95.00
+        mff.ltpc.ltt = 1772697600000
+
+        quote = mff.marketLevel.bidAskQuote.add()
+        quote.bidP = 98.00
+        quote.bidQ = 300
+        quote.askP = 98.40
+        quote.askQ = 450
+
+        mff.optionGreeks.delta = -0.48
+        mff.optionGreeks.theta = -8.50
+        mff.optionGreeks.gamma = 0.00079
+        mff.optionGreeks.vega = 10.8
+        mff.vtt = 75000
+        mff.oi = 612000
+        mff.iv = 15.4
+        mff.atp = 97.50
+        mff.tbq = 120000
+        mff.tsq = 150000
+
+        messages = self.decoder.decode(resp.SerializeToString())
+        self.assertEqual(len(messages), 1)
+        msg = messages[0]
+        self.assertIs(msg.kind, FeedMessageKind.INITIAL_SNAPSHOT)
+        self.assertEqual(msg.fields["ltp"], Decimal("98.2"))
+        self.assertEqual(msg.fields["bid_price"], Decimal("98.0"))
+        self.assertEqual(msg.fields["ask_price"], Decimal("98.4"))
+        self.assertEqual(msg.fields["volume"], 75000)
+        self.assertEqual(msg.fields["oi"], 612000)
+        self.assertEqual(msg.fields["iv"], Decimal("15.4"))
+        self.assertEqual(msg.fields["atp"], Decimal("97.5"))
+        self.assertEqual(msg.fields["total_buy_qty"], 120000)
+        self.assertEqual(msg.fields["total_sell_qty"], 150000)
+        self.assertEqual(len(msg.fields["depth"]), 1)
+
+    def test_decode_full_index_feed_frame(self):
+        from decimal import Decimal
+
+        from oipulse.marketdata.providers.upstox.proto import MarketDataFeed_pb2
+
+        resp = MarketDataFeed_pb2.FeedResponse()
+        resp.type = MarketDataFeed_pb2.Type.live_feed
+        resp.currentTs = 1772697600000
+
+        feed = resp.feeds["NSE_INDEX|Nifty 50"]
+        feed.requestMode = MarketDataFeed_pb2.RequestMode.full_d5
+        iff = feed.fullFeed.indexFF
+        iff.ltpc.ltp = 25050.40
+        iff.ltpc.cp = 24980.00
+        iff.ltpc.ltt = 1772697600000
+
+        candle = iff.marketOHLC.ohlc.add()
+        candle.interval = "1d"
+        candle.open = 25000.00
+        candle.high = 25100.00
+        candle.low = 24950.00
+        candle.close = 25050.40
+
+        messages = self.decoder.decode(resp.SerializeToString())
+        self.assertEqual(len(messages), 1)
+        msg = messages[0]
+        self.assertEqual(msg.instrument_key, "NSE_INDEX|Nifty 50")
+        self.assertEqual(msg.fields["ltp"], Decimal("25050.4"))
+        self.assertEqual(msg.fields["open"], Decimal("25000.0"))
+        self.assertEqual(msg.fields["high"], Decimal("25100.0"))
+        self.assertEqual(msg.fields["low"], Decimal("24950.0"))
+        self.assertEqual(msg.fields["close"], Decimal("25050.4"))
+
+    def test_decoder_determinism(self):
+        from oipulse.marketdata.providers.upstox.proto import MarketDataFeed_pb2
+
+        resp = MarketDataFeed_pb2.FeedResponse()
+        resp.type = MarketDataFeed_pb2.Type.live_feed
+        resp.currentTs = 1772697600000
+        feed = resp.feeds["NSE_FO|CE25000|2026-03-05"]
+        feed.requestMode = MarketDataFeed_pb2.RequestMode.ltpc
+        feed.ltpc.ltp = 125.75
+        feed.ltpc.ltt = 1772697600000
+
+        raw_bytes = resp.SerializeToString()
+        run1 = self.decoder.decode(raw_bytes)
+        run2 = self.decoder.decode(raw_bytes)
+        self.assertEqual(run1, run2)
+
+    def test_downstream_normalization_from_decoded_frame(self):
+        from datetime import UTC, datetime
+        from decimal import Decimal
+
+        from oipulse.core.clock import FrozenClock
+        from oipulse.core.ids import InstrumentId
+        from oipulse.marketdata.observations import GreeksObservation, QuoteObservation, Source
+        from oipulse.marketdata.providers.upstox.normalize import normalize_ws_tick
+        from oipulse.marketdata.providers.upstox.proto import MarketDataFeed_pb2
+
+        resp = MarketDataFeed_pb2.FeedResponse()
+        resp.type = MarketDataFeed_pb2.Type.live_feed
+        resp.currentTs = 1772697600000
+
+        feed = resp.feeds["NSE_FO|CE25000|2026-03-05"]
+        feed.firstLevelWithGreeks.ltpc.ltp = 125.75
+        feed.firstLevelWithGreeks.ltpc.cp = 120.50
+        feed.firstLevelWithGreeks.firstDepth.bidP = 125.50
+        feed.firstLevelWithGreeks.firstDepth.bidQ = 150
+        feed.firstLevelWithGreeks.firstDepth.askP = 126.00
+        feed.firstLevelWithGreeks.firstDepth.askQ = 225
+        feed.firstLevelWithGreeks.optionGreeks.delta = 0.52
+        feed.firstLevelWithGreeks.optionGreeks.gamma = 0.00081
+        feed.firstLevelWithGreeks.optionGreeks.theta = -9.14
+        feed.firstLevelWithGreeks.optionGreeks.vega = 11.2
+        feed.firstLevelWithGreeks.vtt = 50000
+        feed.firstLevelWithGreeks.oi = 450000
+        feed.firstLevelWithGreeks.iv = 14.8
+
+        decoded_messages = self.decoder.decode(resp.SerializeToString())
+        self.assertEqual(len(decoded_messages), 1)
+        msg = decoded_messages[0]
+
+        clock = FrozenClock(datetime(2026, 3, 5, 9, 30, tzinfo=UTC))
+        observations = normalize_ws_tick(
+            payload={"instrument_key": msg.instrument_key, **msg.fields},
+            instrument_id=InstrumentId(101),
+            clock=clock,
+            feed_session_id="session-1",
+            channel="option_greeks",
+            received_seq=1,
+            venue_timestamp=msg.provider_timestamp,
         )
-        spec = IngestorSpec(vendor_keys=("NSE_FO|1",), mode=DataMode.GREEKS)
-        previous = os.environ.get("UPSTOX_ACCESS_TOKEN")
-        os.environ["UPSTOX_ACCESS_TOKEN"] = "synthetic-token-not-a-real-credential"
-        try:
-            code = run_ingestor(settings, spec)
-        finally:
-            if previous is None:
-                os.environ.pop("UPSTOX_ACCESS_TOKEN", None)
-            else:
-                os.environ["UPSTOX_ACCESS_TOKEN"] = previous
-        # 3 if sqlalchemy is absent (this sandbox), 7 once it is installed and the
-        # decoder is still missing. Both are refusals; neither silently collects.
-        self.assertIn(code, (3, 7))
+
+        self.assertEqual(len(observations), 2)
+        quote_obs = next(o for o in observations if isinstance(o, QuoteObservation))
+        greeks_obs = next(o for o in observations if isinstance(o, GreeksObservation))
+
+        self.assertEqual(quote_obs.instrument_id, InstrumentId(101))
+        self.assertEqual(quote_obs.source, Source.WS)
+        self.assertEqual(quote_obs.ltp, Decimal("125.75"))
+        self.assertEqual(quote_obs.bid, Decimal("125.5"))
+        self.assertEqual(quote_obs.ask, Decimal("126.0"))
+        self.assertEqual(quote_obs.volume, 50000)
+        self.assertEqual(quote_obs.oi, 450000)
+
+        self.assertEqual(greeks_obs.delta, Decimal("0.52"))
+        self.assertEqual(greeks_obs.gamma, Decimal("0.00081"))
+        self.assertEqual(greeks_obs.theta, Decimal("-9.14"))
+        self.assertEqual(greeks_obs.vega, Decimal("11.2"))
+        self.assertEqual(greeks_obs.iv, Decimal("14.8"))
 
 
 class TestGapTaxonomy(unittest.TestCase):
