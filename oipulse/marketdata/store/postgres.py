@@ -127,11 +127,16 @@ class PostgresObservationRepository(TemporalRepository[MarketObservation]):
         for table, rows in batches.items():
             if not rows:
                 continue
-            stmt = pg_insert(table).values(rows)
+            # Two names, not one rebound: `.returning()` produces a `ReturningInsert`,
+            # a different type from the `Insert` it was called on. Reusing the variable
+            # made the statement's static type the pre-RETURNING one, which is how a
+            # dropped RETURNING clause could have gone unnoticed -- and RETURNING is
+            # what makes the inserted count exact rather than an estimate.
+            insert_stmt = pg_insert(table).values(rows)
             # DO NOTHING across every identity tier at once: whichever partial unique
             # index the row falls under, a repeat is silently dropped.
-            stmt = stmt.on_conflict_do_nothing().returning(table.c.id)
-            result = await self._conn.execute(stmt)
+            returning_stmt = insert_stmt.on_conflict_do_nothing().returning(table.c.id)
+            result = await self._conn.execute(returning_stmt)
             inserted += len(result.fetchall())
 
         return WriteResult(inserted=inserted, duplicates=submitted - inserted)

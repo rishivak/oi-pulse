@@ -45,7 +45,7 @@ from __future__ import annotations
 
 import json
 import uuid
-from collections.abc import AsyncIterator, Iterator, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
 from itertools import count
@@ -64,9 +64,12 @@ __all__ = [
     "FeedMessageKind",
     "ProtoDecoderUnavailable",
     "ProtoFrameDecoder",
+    "RestAuthorizer",
     "UpstoxV3FeedClient",
     "V3AuthorizationError",
+    "V3Frame",
     "V3SubscriptionMode",
+    "WebSocketConnection",
     "build_subscribe_request",
     "build_unsubscribe_request",
 ]
@@ -156,6 +159,29 @@ class ProtoFrameDecoder(Protocol):
     proto_revision: str
 
     def decode(self, payload: bytes) -> Sequence[DecodedFeedMessage]: ...
+
+
+@dataclass(frozen=True, slots=True)
+class V3Frame:
+    """A decoded V3 message in the shape the canonical provider consumes.
+
+    `provider_event_id` and `channel_sequence` are annotated `None`, not `str | None`
+    and `int | None`. The canonical provider's frame contract includes them because
+    *some* provider may supply them; Upstox V3 does not, and typing them as `None`
+    makes populating them a type error rather than a convention someone can quietly
+    break.
+
+    `channel` carries the subscription mode. V3 has no channel concept, and labelling
+    it with the mode is honest — it groups frames by what was subscribed rather than
+    implying a provider-side stream partition that does not exist.
+    """
+
+    channel: str
+    payload: dict[str, Any]
+    received_seq: int
+    venue_timestamp: Any | None = None
+    provider_event_id: None = None
+    channel_sequence: None = None
 
 
 class RestAuthorizer(Protocol):
@@ -254,7 +280,7 @@ class UpstoxV3FeedClient:
         clock: Clock,
         sessions: SessionManager,
         decoder: ProtoFrameDecoder | None,
-        connect: Any = None,
+        connect: Callable[[str], Awaitable[WebSocketConnection]] | None = None,
     ) -> None:
         if decoder is None:
             raise ProtoDecoderUnavailable(
@@ -328,6 +354,35 @@ class UpstoxV3FeedClient:
                     )
                     continue
                 yield message
+
+    async def stream(self, vendor_keys: Sequence[str], mode: str) -> AsyncIterator[V3Frame]:
+        """Authorize, connect, subscribe, then yield frames.
+
+        This is the contract `UpstoxMarketDataProvider` consumes, so the provider never
+        sees a socket. Implementing it here rather than adapting the client at the call
+        site is what makes the V3 client substitutable for the retired V2 one: the
+        mismatch was otherwise resolved by passing an incompatible object and would
+        have failed at the first frame.
+        """
+        if self._connect is None:
+            raise V3AuthorizationError(
+                "no connect factory supplied; UpstoxV3FeedClient cannot open a socket"
+            )
+        uri = await self.authorize()
+        connection = await self._connect(uri)
+        try:
+            await self.subscribe(connection, vendor_keys, V3SubscriptionMode(mode))
+            async for message in self.frames(connection):
+                yield V3Frame(
+                    channel=mode,
+                    # instrument_key is what the resolver keys on; the decoded fields
+                    # follow it. Absent fields are simply not present.
+                    payload={"instrument_key": message.instrument_key, **message.fields},
+                    received_seq=self.next_received_seq(),
+                    venue_timestamp=message.provider_timestamp,
+                )
+        finally:
+            await connection.close()
 
     def next_received_seq(self) -> int:
         """Local monotonic arrival counter. Diagnostics only, never an ordering key."""

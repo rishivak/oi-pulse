@@ -255,18 +255,27 @@ class TestRecordedFixtureContract(unittest.TestCase):
     """
 
     def test_the_recorded_directory_exists_and_is_documented(self):
-        self.assertTrue(RECORDED.is_dir())
+        """Tracked, not merely present on someone's disk.
+
+        This failed on the verifier's machine because git does not track empty
+        directories: the directory existed for the implementer and not in a fresh
+        clone. The per-feed README is what makes it travel with the repository, so
+        both the directory and that file are asserted.
+        """
+        self.assertTrue(RECORDED.is_dir(), f"{RECORDED} is missing from the checkout")
+        self.assertTrue((RECORDED / "README.md").is_file(), "the feed directory is undocumented")
         self.assertTrue((RECORDED.parent / "README.md").is_file())
 
     def test_synthetic_fixtures_are_never_placed_under_recorded(self):
-        offenders = []
-        for path in RECORDED.rglob("*"):
-            if (
-                path.is_file()
-                and path.suffix in {".json", ".py", ".md"}
-                and "SYNTHETIC" in path.read_text(encoding="utf-8", errors="ignore").upper()
-            ):
-                offenders.append(path.name)
+        """Payloads and manifests only. Documentation here *must* be free to explain
+        the recorded-versus-synthetic rule, so `.md` is not a payload and is exempt."""
+        offenders = [
+            path.name
+            for path in RECORDED.rglob("*")
+            if path.is_file()
+            and path.suffix in {".json", ".bin"}
+            and "SYNTHETIC" in path.read_text(encoding="utf-8", errors="ignore").upper()
+        ]
         self.assertEqual(offenders, [], "synthetic payloads must never live under recorded/")
 
     def test_every_capture_has_a_complete_manifest(self):
@@ -467,3 +476,142 @@ class TestGapTaxonomy(unittest.TestCase):
         gap = sessions.record_stale()
         self.assertIs(gap.kind, GapKind.STALE_FEED)
         self.assertIsNone(gap.expected_sequence, "staleness claims no missing sequence")
+
+
+class TestInterfaceConformance(unittest.TestCase):
+    """The boundaries mypy flagged, asserted structurally so they cannot drift again.
+
+    Each of these was a real mismatch: the V3 client was passed where the canonical
+    provider expects a `WsTransport`, and the REST client was passed where the V3
+    client expects a `RestAuthorizer`. Both type-checked as `object` and would have
+    failed at the first frame rather than at construction.
+    """
+
+    def test_the_rest_client_satisfies_the_v3_authorizer_contract(self):
+        import inspect
+
+        from oipulse.marketdata.providers.upstox.rest import UpstoxRestClient
+        from oipulse.marketdata.providers.upstox.v3 import RestAuthorizer
+
+        self.assertTrue(hasattr(UpstoxRestClient, "get_json"))
+        self.assertTrue(inspect.iscoroutinefunction(UpstoxRestClient.get_json))
+        self.assertEqual(
+            list(inspect.signature(UpstoxRestClient.get_json).parameters)[1:],
+            list(inspect.signature(RestAuthorizer.get_json).parameters)[1:],
+        )
+
+    def test_the_v3_client_satisfies_the_provider_transport_contract(self):
+        """`UpstoxMarketDataProvider` consumes `stream(vendor_keys, mode)`."""
+        import inspect
+
+        from oipulse.marketdata.providers.upstox.provider import WsTransport
+        from oipulse.marketdata.providers.upstox.v3 import UpstoxV3FeedClient
+
+        self.assertTrue(hasattr(UpstoxV3FeedClient, "stream"))
+        self.assertEqual(
+            list(inspect.signature(UpstoxV3FeedClient.stream).parameters)[1:],
+            list(inspect.signature(WsTransport.stream).parameters)[1:],
+        )
+
+    def test_a_v3_frame_carries_the_fields_the_provider_reads(self):
+        from oipulse.marketdata.providers.upstox.v3 import V3Frame
+
+        frame = V3Frame(channel="full", payload={"instrument_key": "NSE_FO|1"}, received_seq=1)
+        for attribute in (
+            "channel",
+            "payload",
+            "received_seq",
+            "provider_event_id",
+            "channel_sequence",
+        ):
+            with self.subTest(attribute=attribute):
+                self.assertTrue(hasattr(frame, attribute))
+
+    def test_a_v3_frame_never_carries_provider_identity(self):
+        """Annotated `None`, so populating either is a type error, not a convention."""
+        import typing
+
+        from oipulse.marketdata.providers.upstox.v3 import V3Frame
+
+        hints = typing.get_type_hints(V3Frame)
+        self.assertIs(hints["provider_event_id"], type(None))
+        self.assertIs(hints["channel_sequence"], type(None))
+
+        frame = V3Frame(channel="full", payload={}, received_seq=1)
+        self.assertIsNone(frame.provider_event_id)
+        self.assertIsNone(frame.channel_sequence)
+
+
+class TestCapacityUsesRealInstrumentIds(unittest.TestCase):
+    """Planning against fabricated ids silently defeats the protected set."""
+
+    def _spec(self, **kwargs):
+        from oipulse.instruments.universe import DataMode
+        from oipulse.marketdata.runtime import IngestorSpec
+
+        return IngestorSpec(
+            vendor_keys=("NSE_FO|a", "NSE_FO|b"),
+            mode=DataMode.GREEKS,
+            **kwargs,
+        )
+
+    def _runtime_for(self, spec, planner=None):
+        from datetime import UTC, datetime
+
+        from oipulse.core.clock import FrozenClock
+        from oipulse.core.config import Settings
+        from oipulse.marketdata.lifecycle import SessionManager
+        from oipulse.marketdata.providers.upstox.provider import (
+            InstrumentResolver,
+            UpstoxMarketDataProvider,
+        )
+        from oipulse.marketdata.runtime import IngestorRuntime
+        from oipulse.marketdata.store.memory import AsyncSinkAdapter, InMemoryObservationStore
+
+        clock = FrozenClock(datetime(2026, 3, 2, 6, 0, tzinfo=UTC))
+        sessions = SessionManager(clock, session_id_factory=lambda: "s1")
+        settings = Settings(
+            app_env="development",
+            role="ingestor",
+            log_level="INFO",
+            instance_id="t",
+            database_url="postgresql+asyncpg://u:p@localhost/db",
+            redis_url="redis://localhost:6379/0",
+            session_secret_key="x" * 48,
+            token_encryption_key="y" * 48,
+        )
+        provider = UpstoxMarketDataProvider(object(), clock, InstrumentResolver(), sessions)
+        return IngestorRuntime(
+            settings,
+            spec,
+            clock,
+            sessions,
+            provider,
+            AsyncSinkAdapter(InMemoryObservationStore()),
+            planner=planner,
+        )
+
+    def test_the_plan_uses_the_mapped_instrument_ids(self):
+        """Captured at the planner boundary, because that is where the ids matter."""
+        from oipulse.instruments.universe import DataMode
+        from oipulse.marketdata.subscription import SubscriptionPlanner
+
+        seen: list[dict[DataMode, tuple[int, ...]]] = []
+
+        class _SpyPlanner(SubscriptionPlanner):
+            def plan(self, request):
+                seen.append(dict(request.by_mode))
+                return super().plan(request)
+
+        spec = self._spec(instrument_mappings=(("NSE_FO|a", 4001), ("NSE_FO|b", 4002)))
+        self._runtime_for(spec, planner=_SpyPlanner()).plan()
+
+        self.assertEqual(seen, [{DataMode.GREEKS: (4001, 4002)}])
+
+    def test_planning_without_mapped_ids_is_refused(self):
+        """Better to refuse than to plan capacity against ids 0..n-1."""
+        from oipulse.core.errors import ConfigurationError
+
+        with self.assertRaises(ConfigurationError) as ctx:
+            self._runtime_for(self._spec()).plan()
+        self.assertIn("instrument ids", str(ctx.exception))

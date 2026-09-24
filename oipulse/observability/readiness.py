@@ -33,9 +33,9 @@ from __future__ import annotations
 
 import asyncio
 import importlib.util
-from collections.abc import Awaitable, Callable, Sequence
-from dataclasses import dataclass
-from typing import Protocol
+from collections.abc import Awaitable, Callable, Mapping, Sequence
+from dataclasses import dataclass, field
+from typing import Any, Protocol
 
 from oipulse.core.config import Settings
 from oipulse.observability.logging import get_logger
@@ -43,6 +43,7 @@ from oipulse.observability.logging import get_logger
 __all__ = [
     "DEFAULT_PROBE_TIMEOUT",
     "ROLE_REQUIREMENTS",
+    "DependencyProbes",
     "ProbeRegistry",
     "ProbeResult",
     "check_postgres",
@@ -124,15 +125,35 @@ async def check_postgres(
         await engine.dispose()
 
 
+class _RedisLike(Protocol):
+    """The two operations this probe needs from a Redis client.
+
+    `redis.asyncio.from_url` is untyped, so calling it directly from a strict-checked
+    module yields an untyped call and an untyped result. Declaring the shape we use
+    keeps the boundary typed without a blanket ignore and without pretending to know
+    the rest of the client's surface.
+    """
+
+    async def ping(self) -> Any: ...
+    async def aclose(self) -> None: ...
+
+
+def _redis_client(redis_url: str) -> _RedisLike:
+    """Typed boundary around the untyped `redis.asyncio.from_url` constructor."""
+    import redis.asyncio as aioredis
+
+    client: _RedisLike = aioredis.from_url(redis_url)
+    return client
+
+
 async def check_redis(redis_url: str, *, timeout: float = DEFAULT_PROBE_TIMEOUT) -> ProbeResult:
     """`PING` against the configured Redis."""
     name = "redis"
     try:
-        import redis.asyncio as aioredis
+        client = _redis_client(redis_url)
     except ImportError as exc:  # pragma: no cover - environment dependent
         return ProbeResult(name, False, f"redis client unavailable: {exc}")
 
-    client = aioredis.from_url(redis_url)
     try:
         await asyncio.wait_for(client.ping(), timeout=timeout)
         return ProbeResult(name, True)
@@ -144,16 +165,25 @@ async def check_redis(redis_url: str, *, timeout: float = DEFAULT_PROBE_TIMEOUT)
         await client.aclose()
 
 
-def check_runtime_dependencies(role: str) -> ProbeResult:
+def check_runtime_dependencies(
+    role: str, *, requirements: Mapping[str, Sequence[str]] | None = None
+) -> ProbeResult:
     """Are the packages this role needs importable?
 
     Synchronous and I/O-free: it resolves import specs rather than importing, so the
     probe cannot execute third-party module-level code as a side effect of a health
     check. An unknown role is a failure, not a silent pass -- a typo in `--role` must
     not produce a process that reports itself ready while doing nothing.
+
+    `requirements` overrides the role-to-packages table. It exists so a test can supply
+    a package that is *definitely* absent and assert the detection path, instead of
+    relying on which packages happen to be installed on the machine running the suite —
+    an assumption that made this probe's test pass in a bare sandbox and fail on a
+    provisioned one. Production always uses the default table.
     """
     name = "runtime_dependencies"
-    required: Sequence[str] | None = ROLE_REQUIREMENTS.get(role)
+    table = ROLE_REQUIREMENTS if requirements is None else requirements
+    required: Sequence[str] | None = table.get(role)
     if required is None:
         return ProbeResult(name, False, f"unknown role {role!r}")
 
@@ -167,8 +197,39 @@ def check_runtime_dependencies(role: str) -> ProbeResult:
     return ProbeResult(name, True)
 
 
+@dataclass(frozen=True, slots=True)
+class DependencyProbes:
+    """The three dependency probes, as an injectable bundle.
+
+    Defaults are the real probes, so production behaviour is exactly what it was. The
+    seam exists so a caller can make failure deterministic: the preflight tests
+    previously asserted against whatever PostgreSQL and Redis happened to be running on
+    the verifying machine, which is not a property of this system at all.
+    """
+
+    postgres: Callable[[str], Awaitable[ProbeResult]] = field(default=check_postgres)
+    redis: Callable[[str], Awaitable[ProbeResult]] = field(default=check_redis)
+    runtime: Callable[[str], ProbeResult] = field(default=check_runtime_dependencies)
+
+    async def evaluate(self, *, database_url: str, redis_url: str, role: str) -> list[ProbeResult]:
+        """Run **all three** probes and return every result.
+
+        Aggregating rather than short-circuiting is deliberate and is the contract the
+        preflight tests assert: an operator fixing a deployment should see the whole
+        list in one restart, not discover the next broken dependency on the next try.
+        """
+        return [
+            self.runtime(role),
+            await self.postgres(database_url),
+            await self.redis(redis_url),
+        ]
+
+
 def register_dependency_probes(
-    registry: ProbeRegistry, settings: Settings, role: str
+    registry: ProbeRegistry,
+    settings: Settings,
+    role: str,
+    probes: DependencyProbes | None = None,
 ) -> tuple[str, ...]:
     """Attach the dependency probes to a `ReadinessRegistry`.
 
@@ -180,15 +241,16 @@ def register_dependency_probes(
     """
     database_url = settings.database_url
     redis_url = settings.redis_url
+    checks = probes or DependencyProbes()
 
     async def postgres() -> bool:
-        return (await check_postgres(database_url)).ok
+        return (await checks.postgres(database_url)).ok
 
     async def redis_probe() -> bool:
-        return (await check_redis(redis_url)).ok
+        return (await checks.redis(redis_url)).ok
 
     async def runtime() -> bool:
-        return check_runtime_dependencies(role).ok
+        return checks.runtime(role).ok
 
     registry.register("postgres", postgres)
     registry.register("redis", redis_probe)

@@ -60,16 +60,13 @@ from oipulse.marketdata.providers.upstox.provider import (
 from oipulse.marketdata.providers.upstox.v3 import (
     ProtoDecoderUnavailable,
     ProtoFrameDecoder,
+    RestAuthorizer,
     UpstoxV3FeedClient,
 )
 from oipulse.marketdata.ratelimit import RateLimitGovernor
 from oipulse.marketdata.subscription import SubscriptionPlanner, SubscriptionRequest
 from oipulse.observability.logging import get_logger
-from oipulse.observability.readiness import (
-    check_postgres,
-    check_redis,
-    check_runtime_dependencies,
-)
+from oipulse.observability.readiness import DependencyProbes
 
 log = get_logger(__name__)
 
@@ -160,6 +157,7 @@ class IngestorRuntime:
         resolver: InstrumentResolver | None = None,
         planner: SubscriptionPlanner | None = None,
         governor: RateLimitGovernor | None = None,
+        probes: DependencyProbes | None = None,
     ) -> None:
         self._settings = settings
         self._spec = spec
@@ -168,6 +166,7 @@ class IngestorRuntime:
         self._provider = provider
         self._resolver = resolver or InstrumentResolver()
         self._governor = governor or RateLimitGovernor(clock)
+        self._probes = probes or DependencyProbes()
         self._collector = CanonicalCollector(
             clock,
             planner or SubscriptionPlanner(),
@@ -201,14 +200,17 @@ class IngestorRuntime:
     async def preflight(self) -> None:
         """Probe every dependency before constructing anything that uses it.
 
-        Raises `PreflightFailed` listing *all* failures rather than the first: an
-        operator fixing a deployment should see the whole list in one restart.
+        **Aggregating, not fail-fast.** All three probes always run and `PreflightFailed`
+        lists every failure, so an operator fixing a deployment sees the whole list in
+        one restart rather than discovering the next broken dependency on the next try.
+        The probes are injectable (`DependencyProbes`) so this contract can be asserted
+        without depending on what happens to be running on the machine.
         """
-        results = [
-            check_runtime_dependencies("ingestor"),
-            await check_postgres(self._settings.database_url),
-            await check_redis(self._settings.redis_url),
-        ]
+        results = await self._probes.evaluate(
+            database_url=self._settings.database_url,
+            redis_url=self._settings.redis_url,
+            role="ingestor",
+        )
         failed = [r for r in results if not r.ok]
         if failed:
             detail = "; ".join(f"{r.name}: {r.detail}" for r in failed)
@@ -217,10 +219,27 @@ class IngestorRuntime:
         log.info("ingestor_preflight_ok", extra={"checks": [r.name for r in results]})
 
     def plan(self) -> CollectorPlan:
-        """Capacity decision, made before a single subscription is sent."""
-        request = self._spec.subscription or SubscriptionRequest(
-            {self._spec.mode: tuple(range(len(self._spec.vendor_keys)))}
-        )
+        """Capacity decision, made before a single subscription is sent.
+
+        The request is built from the shard's **real** instrument ids. An earlier
+        version used `range(len(vendor_keys))`, which not only failed the `InstrumentId`
+        contract but planned capacity against fabricated ids 0..n-1: the protected-set
+        logic in `SubscriptionPlanner`, which must never drop spot or front-expiry ATM,
+        compares against real ids and would have matched none of them.
+        """
+        request = self._spec.subscription
+        if request is None:
+            if not self._spec.instrument_mappings:
+                raise ConfigurationError(
+                    "cannot plan capacity: the universe maps no vendor keys to "
+                    "instrument ids. Supply instrument_mappings or an explicit "
+                    "SubscriptionRequest."
+                )
+            instrument_ids = tuple(
+                InstrumentId(instrument_id)
+                for _vendor_key, instrument_id in self._spec.instrument_mappings
+            )
+            request = SubscriptionRequest({self._spec.mode: instrument_ids})
         return self._collector.plan(
             request,
             self._spec.vendor_keys,
@@ -315,9 +334,23 @@ def _install_signal_handlers(loop: asyncio.AbstractEventLoop, runtime: IngestorR
     deploy's brief WS gap is supposed to be *recorded* as a data-quality issue, which
     only happens if the session is closed on the way out.
     """
+
+    def _handler(received: signal.Signals) -> Callable[[], None]:
+        """Bind the signal by argument rather than by default-argument capture.
+
+        The previous `lambda s=sig:` relied on a default argument to capture the loop
+        variable, which is both easy to misread and untypeable -- the default makes the
+        lambda's signature depend on the captured value.
+        """
+
+        def handle() -> None:
+            runtime.shutdown(f"signal_{received.name}")
+
+        return handle
+
     for sig in (signal.SIGTERM, signal.SIGINT):
         with contextlib.suppress(NotImplementedError, ValueError):
-            loop.add_signal_handler(sig, lambda s=sig: runtime.shutdown(f"signal_{s.name}"))
+            loop.add_signal_handler(sig, _handler(sig))
 
 
 def load_proto_decoder() -> ProtoFrameDecoder | None:
@@ -336,7 +369,7 @@ def load_proto_decoder() -> ProtoFrameDecoder | None:
 
 
 def build_v3_feed_client(
-    rest: object, clock: Clock, sessions: SessionManager
+    rest: RestAuthorizer, clock: Clock, sessions: SessionManager
 ) -> UpstoxV3FeedClient:
     """Construct the V3 feed client, or refuse with an actionable message."""
     decoder = load_proto_decoder()

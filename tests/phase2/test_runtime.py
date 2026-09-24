@@ -17,6 +17,7 @@ SYNTHETIC fixtures throughout.
 from __future__ import annotations
 
 import asyncio
+import importlib.util
 import sys
 import unittest
 from datetime import UTC, date, datetime
@@ -49,8 +50,10 @@ from oipulse.marketdata.runtime import (
 from oipulse.marketdata.store.memory import AsyncSinkAdapter, InMemoryObservationStore
 from oipulse.observability.readiness import (
     ROLE_REQUIREMENTS,
+    DependencyProbes,
     ProbeResult,
     check_runtime_dependencies,
+    register_dependency_probes,
 )
 from tests.fixtures.synthetic import SYNTHETIC_CHAIN_RESPONSE
 
@@ -113,7 +116,45 @@ def _chain_mappings(clock: FrozenClock) -> tuple[tuple[str, int], ...]:
     return tuple(out)
 
 
-def _runtime(rest: _FixtureRest | None = None) -> tuple[IngestorRuntime, InMemoryObservationStore]:
+def _spec_is_findable(name: str) -> bool:
+    """`find_spec` raises rather than returning None for some absent names."""
+    try:
+        return importlib.util.find_spec(name) is not None
+    except (ImportError, ValueError):
+        return False
+
+
+def _ok_probe(name: str):
+    """An always-healthy async probe, for isolating the dependency check."""
+
+    async def probe(_url: str) -> ProbeResult:
+        return ProbeResult(name, True)
+
+    return probe
+
+
+def _failing_probes(*, postgres: str = "", redis: str = "", runtime: str = "") -> DependencyProbes:
+    """Probes with deterministic outcomes. An empty reason means the probe succeeds.
+
+    Nothing here touches a socket, a driver or the machine's installed packages, so the
+    result is the same on a bare sandbox and on a fully provisioned CI runner.
+    """
+
+    async def _postgres(_url: str) -> ProbeResult:
+        return ProbeResult("postgres", not postgres, postgres)
+
+    async def _redis(_url: str) -> ProbeResult:
+        return ProbeResult("redis", not redis, redis)
+
+    def _runtime_deps(_role: str) -> ProbeResult:
+        return ProbeResult("runtime_dependencies", not runtime, runtime)
+
+    return DependencyProbes(postgres=_postgres, redis=_redis, runtime=_runtime_deps)
+
+
+def _runtime(
+    rest: _FixtureRest | None = None, probes: DependencyProbes | None = None
+) -> tuple[IngestorRuntime, InMemoryObservationStore]:
     clock = FrozenClock(datetime(2026, 3, 2, 6, 0, tzinfo=UTC))
     sessions = SessionManager(clock, session_id_factory=lambda: "s1")
     resolver = InstrumentResolver()
@@ -135,7 +176,14 @@ def _runtime(rest: _FixtureRest | None = None) -> tuple[IngestorRuntime, InMemor
         instrument_mappings=mappings,
     )
     runtime = IngestorRuntime(
-        _SETTINGS, spec, clock, sessions, provider, AsyncSinkAdapter(store), resolver=resolver
+        _SETTINGS,
+        spec,
+        clock,
+        sessions,
+        provider,
+        AsyncSinkAdapter(store),
+        resolver=resolver,
+        probes=probes,
     )
     runtime.bind()
     return runtime, store
@@ -188,30 +236,92 @@ class TestUniverseParsing(unittest.TestCase):
 
 
 class TestPreflight(unittest.TestCase):
-    """A process that cannot reach its durable store must refuse to start."""
+    """A process that cannot reach its durable store must refuse to start.
+
+    Every probe outcome here is injected. The earlier version of these tests asserted
+    against whatever PostgreSQL and Redis happened to be listening on the machine: they
+    passed in a sandbox where both were absent and failed on a provisioned verifier
+    where PostgreSQL was reachable and merely rejected the credentials. That made the
+    tests a statement about the verifier's machine rather than about this system.
+    """
 
     def test_preflight_fails_when_a_dependency_is_unreachable(self):
-        runtime, _ = _runtime()
+        runtime, _ = _runtime(probes=_failing_probes(postgres="connection refused"))
+        with self.assertRaises(PreflightFailed) as ctx:
+            asyncio.run(runtime.preflight())
+        self.assertIn("postgres", str(ctx.exception))
+
+    def test_preflight_succeeds_when_every_dependency_is_healthy(self):
+        """The positive case, which no previous test covered: with all three probes
+        green, preflight must return rather than raise."""
+        runtime, _ = _runtime(probes=_failing_probes())
+        asyncio.run(runtime.preflight())  # must not raise
+
+    def test_preflight_reports_every_failure_not_just_the_first(self):
+        """The contract is **aggregate, not fail-fast**.
+
+        `IngestorRuntime.preflight` runs all three probes and collects every failure,
+        so an operator fixing a deployment sees the whole list in one restart instead of
+        discovering the next broken dependency on the next attempt. Asserted by failing
+        all three at once and requiring all three names in the message.
+        """
+        runtime, _ = _runtime(
+            probes=_failing_probes(
+                postgres="connection refused",
+                redis="connection refused",
+                runtime="missing driver",
+            )
+        )
         with self.assertRaises(PreflightFailed) as ctx:
             asyncio.run(runtime.preflight())
         message = str(ctx.exception)
-        # No PostgreSQL, Redis or driver exists in this sandbox, so every probe fails.
-        self.assertIn("postgres", message)
-        self.assertIn("redis", message)
+        for name in ("postgres", "redis", "runtime_dependencies"):
+            with self.subTest(dependency=name):
+                self.assertIn(name, message)
 
-    def test_preflight_reports_every_failure_not_just_the_first(self):
-        """An operator fixing a deployment should see the whole list in one restart."""
-        runtime, _ = _runtime()
-        with self.assertRaises(PreflightFailed) as ctx:
+    def test_a_later_probe_still_runs_after_an_earlier_one_fails(self):
+        """Aggregation must be real, not an artefact of the message format."""
+        called: list[str] = []
+
+        async def _postgres(_url: str) -> ProbeResult:
+            called.append("postgres")
+            return ProbeResult("postgres", False, "connection refused")
+
+        async def _redis(_url: str) -> ProbeResult:
+            called.append("redis")
+            return ProbeResult("redis", True)
+
+        def _deps(_role: str) -> ProbeResult:
+            called.append("runtime_dependencies")
+            return ProbeResult("runtime_dependencies", True)
+
+        runtime, _ = _runtime(
+            probes=DependencyProbes(postgres=_postgres, redis=_redis, runtime=_deps)
+        )
+        with self.assertRaises(PreflightFailed):
             asyncio.run(runtime.preflight())
-        self.assertGreaterEqual(str(ctx.exception).count(":"), 2)
+        self.assertEqual(sorted(called), ["postgres", "redis", "runtime_dependencies"])
 
     def test_the_secret_bearing_url_is_never_in_the_failure_message(self):
-        """`database_url` carries the password."""
-        runtime, _ = _runtime()
+        """`database_url` carries the password, so the probe reports a reason, not a DSN."""
+        runtime, _ = _runtime(probes=_failing_probes(postgres="OperationalError: auth failed"))
         with self.assertRaises(PreflightFailed) as ctx:
             asyncio.run(runtime.preflight())
         self.assertNotIn("p@localhost", str(ctx.exception))
+
+    def test_the_real_probe_does_not_leak_the_dsn_either(self):
+        """The injected probes above cannot prove this, so the real one is checked.
+
+        No PostgreSQL is needed: an unreachable or unparseable URL exercises the same
+        error path, and the assertion is about what the message omits.
+        """
+        from oipulse.observability.readiness import check_postgres
+
+        result = asyncio.run(
+            check_postgres("postgresql+asyncpg://user:sup3rsecret@127.0.0.1:1/none", timeout=0.25)
+        )
+        self.assertFalse(result.ok)
+        self.assertNotIn("sup3rsecret", result.detail)
 
 
 class TestAnchoring(unittest.TestCase):
@@ -287,11 +397,56 @@ class TestReadinessProbes(unittest.TestCase):
                 self.assertTrue(ROLE_REQUIREMENTS[role])
 
     def test_a_missing_package_fails_the_runtime_probe_by_name(self):
-        result = check_runtime_dependencies("ingestor")
+        """Detection is asserted against a package that is definitely absent.
+
+        The earlier version assumed SQLAlchemy, asyncpg and Redis were *not* installed,
+        which was true of the sandbox and false of the provisioned verifier, where the
+        probe correctly returned ok=True and the test failed. The requirements table is
+        now injected, so the outcome depends on this test's input rather than on what
+        happens to be installed. The production probe is unchanged and still uses
+        ROLE_REQUIREMENTS by default.
+        """
+        absent = "oipulse_nonexistent_dependency_for_tests"
+        self.assertFalse(_spec_is_findable(absent), "the sentinel package must genuinely not exist")
+
+        result = check_runtime_dependencies("ingestor", requirements={"ingestor": ("sys", absent)})
         self.assertIsInstance(result, ProbeResult)
-        # The sandbox has no sqlalchemy/asyncpg/redis, so this is the genuine failure.
-        self.assertFalse(result.ok)
-        self.assertIn("sqlalchemy", result.detail)
+        self.assertFalse(result.ok, "a missing dependency must fail the probe")
+        self.assertIn(absent, result.detail, "the missing dependency must be named")
+        self.assertNotIn("sys", result.detail, "an installed dependency must not be reported")
+
+    def test_a_missing_package_makes_ingestor_readiness_unsuccessful(self):
+        """The probe result must actually reach the readiness verdict."""
+        absent = "oipulse_nonexistent_dependency_for_tests"
+
+        class _Registry:
+            def __init__(self):
+                self.probes: dict[str, object] = {}
+
+            def register(self, name, probe):
+                self.probes[name] = probe
+
+        registry = _Registry()
+        register_dependency_probes(
+            registry,
+            _SETTINGS,
+            "ingestor",
+            DependencyProbes(
+                postgres=_ok_probe("postgres"),
+                redis=_ok_probe("redis"),
+                runtime=lambda role: check_runtime_dependencies(
+                    role, requirements={"ingestor": (absent,)}
+                ),
+            ),
+        )
+        results = {name: asyncio.run(probe()) for name, probe in registry.probes.items()}
+        self.assertFalse(results["runtime_dependencies"])
+        self.assertFalse(all(results.values()), "readiness must be unsuccessful")
+
+    def test_the_probe_passes_when_every_requirement_is_present(self):
+        """The positive case, so the test proves detection rather than always failing."""
+        result = check_runtime_dependencies("ingestor", requirements={"ingestor": ("sys", "json")})
+        self.assertTrue(result.ok, result.detail)
 
     def test_an_unknown_role_is_a_failure_not_a_silent_pass(self):
         """A typo in --role must not produce a process that reports itself ready."""
@@ -302,7 +457,6 @@ class TestReadinessProbes(unittest.TestCase):
     def test_provider_availability_is_not_a_readiness_dependency(self):
         """An Upstox outage — or a closed market — must not withdraw the API from
         rotation. The approved design does not make feed health a readiness gate."""
-        from oipulse.observability.readiness import register_dependency_probes
 
         class _Registry:
             """Satisfies `ProbeRegistry` structurally. FastAPI is not installed here,

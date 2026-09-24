@@ -42,7 +42,7 @@ from __future__ import annotations
 
 import asyncio
 import random
-from collections.abc import AsyncIterator, Callable, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from datetime import timedelta
 from itertools import count
@@ -132,8 +132,8 @@ class UpstoxWebSocketClient:
         clock: Clock,
         sessions: SessionManager,
         config: WsConfig | None = None,
-        connect_factory: Callable[..., Any] | None = None,
-        authorize: Callable[[], Any] | None = None,
+        connect_factory: Callable[[], Awaitable[Any]] | None = None,
+        authorize: Callable[[], Awaitable[str]] | None = None,
     ) -> None:
         self._token = access_token
         self._clock = clock
@@ -143,7 +143,13 @@ class UpstoxWebSocketClient:
         self._connect_factory = connect_factory
         self._authorize = authorize
         self._received = count(1)
-        self._stopping = False
+        # An Event rather than a bool: `stop()` is called from a different task while
+        # `stream()` is awaiting, which is exactly what an Event is for. It also keeps
+        # the loop condition honest under static analysis -- a plain attribute read is
+        # narrowed to False by the enclosing `while not self._stopping`, which made the
+        # `if self._stopping: break` inside the loop look unreachable when it is the
+        # normal way a stopped stream exits.
+        self._stop = asyncio.Event()
 
     async def _resolve_socket_url(self) -> str:
         if self._authorize is not None:
@@ -169,7 +175,7 @@ class UpstoxWebSocketClient:
         outage window between sessions is recorded as a `RECONNECT_GAP`.
         """
         attempt = 0
-        while not self._stopping:
+        while not self._stop.is_set():
             try:
                 self._sessions.transition(ConnectionState.CONNECTING)
                 socket = await self._open()
@@ -203,7 +209,7 @@ class UpstoxWebSocketClient:
                 if self._sessions.state is ConnectionState.STREAMING:
                     self._sessions.transition(ConnectionState.DISCONNECTED)
 
-            if self._stopping:
+            if self._stop.is_set():
                 break
 
             attempt += 1
@@ -238,7 +244,7 @@ class UpstoxWebSocketClient:
         """Decode messages and apply the heartbeat watchdog."""
         import json
 
-        while not self._stopping:
+        while not self._stop.is_set():
             try:
                 raw = await asyncio.wait_for(
                     socket.recv(),
@@ -270,4 +276,4 @@ class UpstoxWebSocketClient:
             )
 
     def stop(self) -> None:
-        self._stopping = True
+        self._stop.set()
