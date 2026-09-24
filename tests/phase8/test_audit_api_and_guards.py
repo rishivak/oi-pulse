@@ -12,6 +12,7 @@ import sys
 import unittest
 from decimal import Decimal
 from pathlib import Path
+from typing import Any
 
 from oipulse.trading.audit import NOT_RECORDED, build_audit_chain
 from oipulse.trading.execution import PaperExecutionModel
@@ -505,17 +506,204 @@ class TestObservability(unittest.TestCase):
             PAPER_LIVE_EXECUTION_REFUSALS,
             PAPER_UNRISKED_ACCOUNTS,
             record_paper_account,
-            record_paper_fill,
             record_paper_intent,
         )
 
         record_paper_account("a-metric", status="ACTIVE", risk_evaluated=False)
         record_paper_intent("a-metric", accepted=False, reject_reason="INSUFFICIENT_CASH")
-        record_paper_fill("a-metric", partial=True, assumption_based=True)
         rendered = METRICS.render() if hasattr(METRICS, "render") else str(METRICS.snapshot())
         self.assertIn(PAPER_UNRISKED_ACCOUNTS, rendered)
         self.assertIn("paper_intents_rejected_total", rendered)
         self.assertIsInstance(PAPER_LIVE_EXECUTION_REFUSALS, str)
+
+
+class TestPaperTradingApiRuntime(unittest.TestCase):
+    """Runtime FastAPI HTTP tests against `/paper-trading` endpoints."""
+
+    def setUp(self) -> None:
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+
+        from oipulse.api.paper_trading import router
+        from oipulse.trading.audit import build_audit_chain
+        from oipulse.trading.execution import PaperExecutionModel
+
+        self.rows = fx.observations()
+        self.rt = fx.runtime()
+
+        class MockPaperTradingManager:
+            def __init__(self, default_rt: Any, rows: list[object]) -> None:
+                self._runtimes: dict[str, Any] = {default_rt.account.account_id: default_rt}
+                self._rows = rows
+
+            def list(self) -> list[Any]:
+                return list(self._runtimes.values())
+
+            def get(self, account_id: str) -> Any | None:
+                return self._runtimes.get(account_id)
+
+            def create(self, body: dict[str, Any]) -> Any:
+                acct_id = body.get("account_id", f"acc-{len(self._runtimes) + 1}")
+                starting_cash = Decimal(str(body.get("starting_cash", "500000")))
+                acct = fx.account(account_id=acct_id, cfg=fx.config(starting_cash=starting_cash))
+                rt = fx.runtime(acct=acct)
+                self._runtimes[acct_id] = rt
+                return rt
+
+            def submit(self, account_id: str, body: dict[str, Any]) -> Any:
+                rt = self.get(account_id)
+                if rt is None:
+                    raise KeyError(f"no account {account_id}")
+                intent = fx.intent(
+                    account_id=account_id,
+                    quantity=int(body.get("quantity", 50)),
+                    client_order_intent_id=body.get("intent_id", ""),
+                )
+                return fx.submit(rt, self._rows, intent)
+
+            def cancel(self, account_id: str, order_id: str, body: dict[str, Any]) -> Any:
+                rt = self.get(account_id)
+                if rt is None:
+                    raise KeyError(f"no account {account_id}")
+                return rt.cancel(order_id, at(2), reason=body.get("reason", "API cancel"))
+
+            def snapshot(self, account_id: str) -> Any:
+                rt = self.get(account_id)
+                if rt is None:
+                    raise KeyError(f"no account {account_id}")
+                return rt.ledger.snapshot(as_of=at(3), marks=fx.marks(self._rows, 3))
+
+            def audit(self, account_id: str, order_id: str) -> Any | None:
+                rt = self.get(account_id)
+                if rt is None:
+                    return None
+                order = rt.order(order_id)
+                if order is None:
+                    return None
+                intent = rt.intent(order.intent_id)
+                if intent is None:
+                    return None
+                return build_audit_chain(
+                    order,
+                    intent,
+                    risk_decisions=rt.decisions_for(intent.intent_id),
+                    fills=rt.fills_for_order(order.order_id),
+                    execution_assumptions=PaperExecutionModel(
+                        fill_model=fx.fill_model()
+                    ).assumptions,
+                )
+
+        self.manager = MockPaperTradingManager(self.rt, self.rows)
+        self.app = FastAPI()
+        self.app.include_router(router)
+        self.app.state.paper_trading = self.manager
+        self.client = TestClient(self.app)
+
+    def test_service_unavailable_when_unconfigured(self) -> None:
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+
+        from oipulse.api.paper_trading import router
+
+        empty_app = FastAPI()
+        empty_app.include_router(router)
+        client = TestClient(empty_app)
+        res = client.get("/paper-trading/accounts")
+        self.assertEqual(res.status_code, 503)
+
+    def test_create_account_live_mode_rejected(self) -> None:
+        res = self.client.post("/paper-trading/accounts", json={"mode": "LIVE"})
+        self.assertEqual(res.status_code, 422)
+        self.assertIn("not available", res.json()["detail"])
+
+    def test_create_account_paper_mode_success(self) -> None:
+        res = self.client.post(
+            "/paper-trading/accounts",
+            json={"account_id": "acc-new", "mode": "PAPER", "starting_cash": "250000"},
+        )
+        self.assertEqual(res.status_code, 201)
+        body = res.json()
+        self.assertEqual(body["meta"]["mode"], "PAPER")
+        self.assertEqual(body["data"]["account_id"], "acc-new")
+
+    def test_list_and_get_accounts(self) -> None:
+        res = self.client.get("/paper-trading/accounts")
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.json()["meta"]["mode"], "PAPER")
+
+        res = self.client.get(f"/paper-trading/accounts/{self.rt.account.account_id}")
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.json()["data"]["account_id"], self.rt.account.account_id)
+
+        res = self.client.get("/paper-trading/accounts/nonexistent")
+        self.assertEqual(res.status_code, 404)
+
+    def test_intent_submission_order_lifecycle_and_audit(self) -> None:
+        # Submit intent
+        res = self.client.post(
+            f"/paper-trading/accounts/{self.rt.account.account_id}/intents",
+            json={"intent_id": "int-101", "quantity": 50},
+        )
+        self.assertEqual(res.status_code, 201)
+        sub_data = res.json()
+        self.assertEqual(sub_data["meta"]["mode"], "PAPER")
+        self.assertFalse(sub_data["meta"]["duplicate"])
+        intent_id = sub_data["data"]["intent"]["intent_id"]
+
+        # Duplicate submission is idempotent
+        res_dup = self.client.post(
+            f"/paper-trading/accounts/{self.rt.account.account_id}/intents",
+            json={"intent_id": "int-101", "quantity": 50},
+        )
+        self.assertEqual(res_dup.status_code, 201)
+        self.assertTrue(res_dup.json()["meta"]["duplicate"])
+
+        # Query intent
+        res_intent = self.client.get(
+            f"/paper-trading/accounts/{self.rt.account.account_id}/intents/{intent_id}"
+        )
+        self.assertEqual(res_intent.status_code, 200)
+        self.assertEqual(res_intent.json()["data"]["intent_id"], intent_id)
+
+        # List orders
+        res_orders = self.client.get(f"/paper-trading/accounts/{self.rt.account.account_id}/orders")
+        self.assertEqual(res_orders.status_code, 200)
+        orders = res_orders.json()["data"]
+        self.assertTrue(len(orders) >= 1)
+        order_id = orders[0]["order_id"]
+
+        # Get single order
+        res_order = self.client.get(
+            f"/paper-trading/accounts/{self.rt.account.account_id}/orders/{order_id}"
+        )
+        self.assertEqual(res_order.status_code, 200)
+        self.assertEqual(res_order.json()["data"]["order_id"], order_id)
+
+        # Get order events
+        res_events = self.client.get(
+            f"/paper-trading/accounts/{self.rt.account.account_id}/orders/{order_id}/events"
+        )
+        self.assertEqual(res_events.status_code, 200)
+        events = res_events.json()["data"]
+        self.assertTrue(len(events) >= 2)
+
+        # Get fills
+        res_fills = self.client.get(f"/paper-trading/accounts/{self.rt.account.account_id}/fills")
+        self.assertEqual(res_fills.status_code, 200)
+        self.assertTrue(len(res_fills.json()["data"]) >= 1)
+
+        # Get positions & pnl
+        res_pos = self.client.get(f"/paper-trading/accounts/{self.rt.account.account_id}/positions")
+        self.assertEqual(res_pos.status_code, 200)
+        res_pnl = self.client.get(f"/paper-trading/accounts/{self.rt.account.account_id}/pnl")
+        self.assertEqual(res_pnl.status_code, 200)
+
+        # Get audit chain
+        res_audit = self.client.get(
+            f"/paper-trading/accounts/{self.rt.account.account_id}/audit/{order_id}"
+        )
+        self.assertEqual(res_audit.status_code, 200)
+        self.assertIn("answers", res_audit.json()["data"])
 
 
 if __name__ == "__main__":
