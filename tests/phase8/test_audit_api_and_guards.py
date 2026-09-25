@@ -469,21 +469,32 @@ class TestArchitectureGuards(unittest.TestCase):
             with self.subTest(package=package):
                 self.assertFalse((REPO / "oipulse" / package).exists())
 
-    def test_no_live_broker_adapter_exists_anywhere_in_the_codebase(self) -> None:
-        """The strongest form of the paper-only claim: absence, not a disabled flag."""
-        for path in sorted((REPO / "oipulse").rglob("*.py")):
-            if "__pycache__" in path.parts:
-                continue
-            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-            for node in ast.walk(tree):
-                if isinstance(node, ast.ClassDef):
-                    with self.subTest(file=path.name, cls=node.name):
-                        self.assertNotIn(
-                            "upstoxbroker",
-                            node.name.lower().replace("_", ""),
-                            f"{path.name} defines {node.name}; Phase 10 owns the live "
-                            f"adapter and it must not land without its gates",
-                        )
+    def test_no_broker_adapter_can_submit_a_live_order(self) -> None:
+        """Phase 8 asserted no live adapter existed. Phase 10 landed one, with gates.
+
+        The assertion is replaced, not deleted, by the property it was protecting.
+        "`UpstoxBrokerAdapter` must not exist" was a proxy for "nothing can submit
+        a real order"; Phase 10 makes the adapter exist as a *boundary* that holds
+        no capability, so the property is now checked directly: every adapter's
+        capability set must exclude `LIVE_SUBMIT`.
+
+        That is strictly stronger. The old form would have passed a live-capable
+        adapter under any other class name.
+        """
+        from oipulse.trading.brokers import (
+            ExecutionCapability,
+            PaperBrokerAdapter,
+            UpstoxBrokerAdapter,
+        )
+        from oipulse.trading.execution import PaperExecutionModel
+
+        adapters = [
+            UpstoxBrokerAdapter(),
+            PaperBrokerAdapter(execution=PaperExecutionModel(fill_model=fx.fill_model())),
+        ]
+        for adapter in adapters:
+            with self.subTest(adapter=adapter.name):
+                self.assertNotIn(ExecutionCapability.LIVE_SUBMIT, adapter.capabilities)
 
     def test_the_risk_seam_does_not_import_what_it_constrains(self) -> None:
         """`11` §3: the component that says 'no' must not depend on the components

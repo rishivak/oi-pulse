@@ -30,6 +30,7 @@ from oipulse.api.features import router as features_router
 from oipulse.api.health import registry, router
 from oipulse.api.market_state import router as market_router
 from oipulse.api.paper_trading import router as paper_trading_router
+from oipulse.api.reconciliation import router as reconciliation_router
 from oipulse.api.replay import router as replay_router
 from oipulse.api.research import router as research_router
 from oipulse.api.risk import router as risk_router
@@ -95,6 +96,12 @@ def create_app(settings: Settings) -> FastAPI:
     # cannot forge one, and `/risk/evaluate` triggers the engine rather than
     # accepting a verdict.
     app.include_router(risk_router)
+    # Phase 10. The OMS read surface and reconciliation. There is deliberately no
+    # submit endpoint here: submission goes through intent -> risk -> OMS, and no
+    # route accepts provider state, a provider id or a target order state, so a
+    # client cannot forge broker truth or force a transition. Live execution
+    # remains off and every response says so.
+    app.include_router(reconciliation_router)
 
     # Readiness covers this process's own dependencies: PostgreSQL (durable truth),
     # Redis (coordination) and the packages the role needs locally. Phase 1 registered
