@@ -12,6 +12,7 @@ from __future__ import annotations
 import ast
 import subprocess
 import sys
+import tempfile
 import unittest
 from decimal import Decimal
 from pathlib import Path
@@ -679,6 +680,194 @@ class TestObservability(unittest.TestCase):
             ),
             2.0,
         )
+
+
+class TestLiveExecutionBarrierGuardMutation(unittest.TestCase):
+    """Mutation tests for tools/check_live_execution_barrier.py."""
+
+    def test_non_literal_flag_fails_guard(self) -> None:
+        from tools.check_live_execution_barrier import _check_flag_is_a_literal_false
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            target = tmp / "oipulse/trading/brokers"
+            target.mkdir(parents=True)
+            # Mutate to os.getenv(...)
+            (target / "capability.py").write_text(
+                "import os\nLIVE_EXECUTION_ENABLED = bool(os.getenv('LIVE', '0'))\n",
+                encoding="utf-8",
+            )
+            findings = _check_flag_is_a_literal_false(tmp)
+            self.assertTrue(
+                any("not the literal False" in f for f in findings),
+                f"Expected literal False violation, got {findings}",
+            )
+
+    def test_true_flag_fails_guard(self) -> None:
+        from tools.check_live_execution_barrier import _check_flag_is_a_literal_false
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            target = tmp / "oipulse/trading/brokers"
+            target.mkdir(parents=True)
+            (target / "capability.py").write_text(
+                "LIVE_EXECUTION_ENABLED = True\n",
+                encoding="utf-8",
+            )
+            findings = _check_flag_is_a_literal_false(tmp)
+            self.assertTrue(
+                any("not the literal False" in f for f in findings),
+                f"Expected literal False violation, got {findings}",
+            )
+
+    def test_network_import_in_trading_fails_guard(self) -> None:
+        from tools.check_live_execution_barrier import _check_no_network_or_credentials
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            target = tmp / "oipulse/trading"
+            target.mkdir(parents=True)
+            (target / "bad_client.py").write_text(
+                "import httpx\n",
+                encoding="utf-8",
+            )
+            findings = _check_no_network_or_credentials(tmp)
+            self.assertTrue(
+                any("imports httpx" in f for f in findings),
+                f"Expected httpx network violation, got {findings}",
+            )
+
+    def test_credential_import_in_trading_fails_guard(self) -> None:
+        from tools.check_live_execution_barrier import _check_no_network_or_credentials
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            target = tmp / "oipulse/trading"
+            target.mkdir(parents=True)
+            (target / "bad_secret.py").write_text(
+                "from oipulse.core.secrets import get_secret\n",
+                encoding="utf-8",
+            )
+            findings = _check_no_network_or_credentials(tmp)
+            self.assertTrue(
+                any("imports oipulse.core.secrets" in f for f in findings),
+                f"Expected credential violation, got {findings}",
+            )
+
+    def test_upstox_missing_capability_gate_fails_guard(self) -> None:
+        from tools.check_live_execution_barrier import _check_upstox_cannot_submit
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            target = tmp / "oipulse/trading/brokers"
+            target.mkdir(parents=True)
+            original = (REPO / "oipulse/trading/brokers/upstox.py").read_text(encoding="utf-8")
+            # Remove require_capability call from place_order
+            mutated = original.replace(
+                "require_capability(self.capabilities, ExecutionCapability.LIVE_SUBMIT, who=self.name)",
+                "pass",
+            )
+            (target / "upstox.py").write_text(mutated, encoding="utf-8")
+            findings = _check_upstox_cannot_submit(tmp)
+            self.assertTrue(
+                any("does not call require_capability" in f for f in findings),
+                f"Expected missing capability gate violation, got {findings}",
+            )
+
+    def test_upstox_with_await_fails_guard(self) -> None:
+        from tools.check_live_execution_barrier import _check_upstox_cannot_submit
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            target = tmp / "oipulse/trading/brokers"
+            target.mkdir(parents=True)
+            original = (REPO / "oipulse/trading/brokers/upstox.py").read_text(encoding="utf-8")
+            # Add await to place_order
+            mutated = original.replace(
+                "require_capability(self.capabilities, ExecutionCapability.LIVE_SUBMIT, who=self.name)",
+                "require_capability(self.capabilities, ExecutionCapability.LIVE_SUBMIT, who=self.name)\n        await something()",
+            )
+            (target / "upstox.py").write_text(mutated, encoding="utf-8")
+            findings = _check_upstox_cannot_submit(tmp)
+            self.assertTrue(
+                any("awaits something" in f for f in findings),
+                f"Expected await violation, got {findings}",
+            )
+
+    def test_submit_route_in_api_fails_guard(self) -> None:
+        from tools.check_live_execution_barrier import _check_no_api_submit_route
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            target = tmp / "oipulse/api"
+            target.mkdir(parents=True)
+            (target / "bad_route.py").write_text(
+                "from fastapi import APIRouter\nrouter = APIRouter()\n"
+                "@router.post('/submit')\ndef submit_order(): pass\n",
+                encoding="utf-8",
+            )
+            findings = _check_no_api_submit_route(tmp)
+            self.assertTrue(
+                any("names a submission surface" in f for f in findings),
+                f"Expected submission surface violation, got {findings}",
+            )
+
+    def test_forged_provider_param_in_api_fails_guard(self) -> None:
+        from tools.check_live_execution_barrier import _check_no_api_submit_route
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            target = tmp / "oipulse/api"
+            target.mkdir(parents=True)
+            (target / "bad_route.py").write_text(
+                "from fastapi import APIRouter\nrouter = APIRouter()\n"
+                "@router.post('/trigger')\ndef trigger(provider_orders: list): pass\n",
+                encoding="utf-8",
+            )
+            findings = _check_no_api_submit_route(tmp)
+            self.assertTrue(
+                any("takes 'provider_orders'" in f for f in findings),
+                f"Expected provider param violation, got {findings}",
+            )
+
+    def test_submission_before_authorization_fails_guard(self) -> None:
+        from tools.check_live_execution_barrier import _check_authorization_precedes_submission
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            target = tmp / "oipulse/trading/oms"
+            target.mkdir(parents=True)
+            (target / "manager.py").write_text(
+                "class OrderManager:\n"
+                "    async def submit(self):\n"
+                "        await self.adapter.place_order(None)\n"
+                "        self.authorize_submission()\n",
+                encoding="utf-8",
+            )
+            findings = _check_authorization_precedes_submission(tmp)
+            self.assertTrue(
+                any("place_order is called before the authorization" in f for f in findings),
+                f"Expected inverted authorization violation, got {findings}",
+            )
+
+    def test_unknown_transition_to_open_fails_guard(self) -> None:
+        from tools.check_live_execution_barrier import _check_unknown_has_no_resubmit_edge
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            target = tmp / "oipulse/trading"
+            target.mkdir(parents=True)
+            original = (REPO / "oipulse/trading/orders.py").read_text(encoding="utf-8")
+            mutated = original.replace(
+                "OrderState.UNKNOWN: frozenset({OrderState.PENDING_RECONCILIATION})",
+                "OrderState.UNKNOWN: frozenset({OrderState.PENDING_RECONCILIATION, OrderState.OPEN})",
+            )
+            (target / "orders.py").write_text(mutated, encoding="utf-8")
+            findings = _check_unknown_has_no_resubmit_edge(tmp)
+            self.assertTrue(
+                any("UNKNOWN permits" in f for f in findings),
+                f"Expected UNKNOWN transition violation, got {findings}",
+            )
 
 
 if __name__ == "__main__":
