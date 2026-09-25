@@ -213,6 +213,14 @@ CONTRACTS: tuple[Contract, ...] = (
                 "analytics",
                 "marketstate",
                 "events",
+                # Phase 11: portfolio valuation resolves lot size and contract
+                # multiplier from the instrument version valid at the valuation
+                # time (`07-ANALYTICS.md` §4.3, `11-TRADING.md` §8). `instruments`
+                # is a pure low layer -- stdlib plus `core` only, the same tier as
+                # `events` -- so admitting it does not weaken the purity contract.
+                # The alternative would be a second copy of contract economics for
+                # the two to disagree about.
+                "instruments",
                 "core",
             }
         ),

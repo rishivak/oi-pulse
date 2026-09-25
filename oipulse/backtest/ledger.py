@@ -206,6 +206,17 @@ class Ledger:
             self._positions[key] for key in sorted(self._positions) if self._positions[key].quantity
         )
 
+    def all_positions(self) -> tuple[Position, ...]:
+        """Every position including flat ones, sorted by instrument id.
+
+        Additive accessor (Phase 11). `positions()` hides a zero-quantity position
+        because a backtest's open book is what matters there. A portfolio needs the
+        closed ones too: their realised P&L is real and belongs in the day's
+        attribution, and dropping them would make a day's components fail to sum to
+        its total.
+        """
+        return tuple(self._positions[key] for key in sorted(self._positions))
+
     # ------------------------------------------------------------------ writing
 
     def apply(self, fill: Fill) -> bool:
