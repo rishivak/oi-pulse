@@ -21,6 +21,7 @@ __all__ = [
     "record_alert_delivery",
     "record_alert_suppressed",
     "record_alert_triggered",
+    "record_attribution_run",
     "record_backtest_run",
     "record_capability_refusal",
     "record_feature_computed",
@@ -36,6 +37,10 @@ __all__ = [
     "record_paper_ledger_failure",
     "record_paper_order",
     "record_paper_sequence_gap",
+    "record_portfolio_snapshot",
+    "record_portfolio_valuation",
+    "record_position_reconciliation",
+    "record_position_update",
     "record_provenance_failure",
     "record_reconciliation_run",
     "record_replay_reconstruction",
@@ -813,3 +818,139 @@ def record_capability_refusal(who: str, capability: str) -> None:
     was tested.
     """
     METRICS.inc(LIVE_EXECUTION_REFUSALS, {"who": who, "capability": capability})
+
+
+# --- Phase 11 portfolio and attribution (`16-OBSERVABILITY.md`, `11-TRADING.md` §8).
+#
+# Brief §27: names and units must be meaningful. Every amount metric is in account
+# currency and says so in its name; every ratio is a fraction in [0, 1] and says
+# that too. A bare `residual_total` would be ambiguous between the two.
+PORTFOLIO_VALUATIONS = "portfolio_valuations_total"
+PORTFOLIO_VALUATION_DURATION = "portfolio_valuation_duration_seconds"
+#: Positions that could not be priced, labelled by reason. Each one silently
+#: understates exposure if a reader takes the total at face value.
+PORTFOLIO_UNVALUED_POSITIONS = "portfolio_unvalued_positions_total"
+#: Valuations refused outright because the state was unreliable. Distinct from a
+#: partial valuation: a refusal produced no number at all.
+PORTFOLIO_VALUATIONS_REFUSED = "portfolio_valuations_refused_total"
+PORTFOLIO_POSITION_UPDATES = "portfolio_position_updates_total"
+PORTFOLIO_DUPLICATE_FILLS = "portfolio_duplicate_fills_total"
+PORTFOLIO_SNAPSHOTS = "portfolio_snapshots_total"
+#: Snapshots whose valuation was partial. A gauge of how often the book cannot be
+#: fully priced, which is an operational fact rather than an error.
+PORTFOLIO_INCOMPLETE_SNAPSHOTS = "portfolio_incomplete_snapshots_total"
+
+ATTRIBUTION_RUNS = "attribution_runs_total"
+ATTRIBUTION_DURATION = "attribution_duration_seconds"
+#: Absolute unexplained amount, in account currency. `18` Phase 11 requires the
+#: residual to be prominent, and a histogram of it is how an operator notices the
+#: decomposition degrading before anyone reads a report.
+ATTRIBUTION_RESIDUAL_ABS = "attribution_residual_abs_currency"
+#: Residual as a fraction of |total P&L|, in [0, 1]. The number that says how much
+#: the model actually explained; the absolute figure alone cannot.
+ATTRIBUTION_RESIDUAL_FRACTION = "attribution_residual_fraction_ratio"
+#: Components that could not be computed, labelled by component. Usually the
+#: residual's cause, and labelling them is what makes the cause findable.
+ATTRIBUTION_UNCOMPUTED_COMPONENTS = "attribution_uncomputed_components_total"
+#: Slices with no identifiable owner. Brief §15: represented, never assigned.
+ATTRIBUTION_UNATTRIBUTED_SLICES = "attribution_unattributed_slices_total"
+
+POSITION_RECONCILIATION_RUNS = "position_reconciliation_runs_total"
+#: Labelled by kind and resolution: a corrected quantity mismatch and an
+#: unexplainable broker position are not one number.
+POSITION_RECONCILIATION_MISMATCHES = "position_reconciliation_mismatches_total"
+POSITION_RECONCILIATION_CORRECTIONS = "position_reconciliation_corrections_total"
+POSITION_RECONCILIATION_NEEDS_ATTENTION = "position_reconciliation_needs_attention_total"
+#: Instrument versions that could not be resolved at the valuation time. Each one
+#: makes a position unvaluable, so this should stay at zero.
+PORTFOLIO_ECONOMICS_UNRESOLVED = "portfolio_economics_unresolved_total"
+
+
+def record_portfolio_valuation(
+    account_id: str,
+    *,
+    duration_seconds: float,
+    positions_valued: int,
+    unvalued_by_reason: dict[str, int] | None = None,
+    refused: bool = False,
+) -> None:
+    """One valuation pass, with what it could not price.
+
+    `unvalued_by_reason` is labelled rather than summed: a missing price and
+    missing contract economics are different problems with different fixes, and
+    one counter could not tell an operator which they have.
+    """
+    labels = {"account": account_id}
+    if refused:
+        METRICS.inc(PORTFOLIO_VALUATIONS_REFUSED, labels)
+        return
+    METRICS.inc(PORTFOLIO_VALUATIONS, labels)
+    METRICS.observe(PORTFOLIO_VALUATION_DURATION, duration_seconds, labels)
+    for reason, count in sorted((unvalued_by_reason or {}).items()):
+        METRICS.inc(PORTFOLIO_UNVALUED_POSITIONS, {**labels, "reason": reason}, count)
+        if reason == "NO_CONTRACT_ECONOMICS":
+            METRICS.inc(PORTFOLIO_ECONOMICS_UNRESOLVED, labels, count)
+
+
+def record_portfolio_snapshot(account_id: str, *, is_complete: bool) -> None:
+    METRICS.inc(PORTFOLIO_SNAPSHOTS, {"account": account_id})
+    if not is_complete:
+        METRICS.inc(PORTFOLIO_INCOMPLETE_SNAPSHOTS, {"account": account_id})
+
+
+def record_position_update(account_id: str, *, applied: int, duplicates: int) -> None:
+    labels = {"account": account_id}
+    if applied:
+        METRICS.inc(PORTFOLIO_POSITION_UPDATES, labels, applied)
+    if duplicates:
+        METRICS.inc(PORTFOLIO_DUPLICATE_FILLS, labels, duplicates)
+
+
+def record_attribution_run(
+    account_id: str,
+    *,
+    bucket: str,
+    duration_seconds: float,
+    residual_abs: float,
+    residual_fraction: float | None,
+    uncomputed_components: tuple[str, ...] = (),
+    unattributed_slices: int = 0,
+) -> None:
+    """One attribution pass. The residual is recorded both ways, deliberately.
+
+    Absolute and fractional are different questions. A residual of 500 rupees is
+    trivial on a 5,000,000 move and alarming on a 600 one; only the fraction
+    distinguishes them, and only the absolute figure sizes the exposure.
+    """
+    labels = {"account": account_id, "bucket": bucket}
+    METRICS.inc(ATTRIBUTION_RUNS, labels)
+    METRICS.observe(ATTRIBUTION_DURATION, duration_seconds, labels)
+    METRICS.observe(ATTRIBUTION_RESIDUAL_ABS, residual_abs, labels)
+    if residual_fraction is not None:
+        METRICS.observe(ATTRIBUTION_RESIDUAL_FRACTION, residual_fraction, labels)
+    for component in uncomputed_components:
+        METRICS.inc(ATTRIBUTION_UNCOMPUTED_COMPONENTS, {**labels, "component": component})
+    if unattributed_slices:
+        METRICS.inc(ATTRIBUTION_UNATTRIBUTED_SLICES, labels, unattributed_slices)
+
+
+def record_position_reconciliation(
+    account_id: str,
+    *,
+    is_clean: bool,
+    mismatches: dict[tuple[str, str], int] | None = None,
+    corrections: int = 0,
+    needs_attention: int = 0,
+) -> None:
+    labels = {"account": account_id}
+    METRICS.inc(POSITION_RECONCILIATION_RUNS, {**labels, "clean": str(is_clean).lower()})
+    for (kind, resolution), count in sorted((mismatches or {}).items()):
+        METRICS.inc(
+            POSITION_RECONCILIATION_MISMATCHES,
+            {**labels, "kind": kind, "resolution": resolution},
+            count,
+        )
+    if corrections:
+        METRICS.inc(POSITION_RECONCILIATION_CORRECTIONS, labels, corrections)
+    if needs_attention:
+        METRICS.inc(POSITION_RECONCILIATION_NEEDS_ATTENTION, labels, needs_attention)

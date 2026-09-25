@@ -164,6 +164,7 @@ class TestMigrationsApply(unittest.TestCase):
             PHASE8_TABLES,
             PHASE9_TABLES,
             PHASE10_TABLES,
+            PHASE11_TABLES,
         )
 
         self._upgrade_head()
@@ -179,6 +180,7 @@ class TestMigrationsApply(unittest.TestCase):
             *PHASE8_TABLES,
             *PHASE9_TABLES,
             *PHASE10_TABLES,
+            *PHASE11_TABLES,
         ):
             with self.subTest(table=table):
                 self.assertIn(table, present)
@@ -262,6 +264,7 @@ class TestMigrationsApply(unittest.TestCase):
             PHASE8_TABLES,
             PHASE9_TABLES,
             PHASE10_TABLES,
+            PHASE11_TABLES,
         )
 
         self._upgrade_head()
@@ -281,6 +284,7 @@ class TestMigrationsApply(unittest.TestCase):
             *PHASE8_TABLES,
             *PHASE9_TABLES,
             *PHASE10_TABLES,
+            *PHASE11_TABLES,
         ):
             with self.subTest(table=table):
                 self.assertNotIn(table, remaining, f"{table} survived the downgrade")
@@ -582,6 +586,70 @@ class TestMigrationsApply(unittest.TestCase):
 
         with self.assertRaises(sqlalchemy.exc.DatabaseError):
             self._query(seed_and_insert)
+
+    def test_an_attribution_row_cannot_hide_a_residual(self) -> None:
+        """`18` Phase 11's risk, exercised rather than read.
+
+        This is the check that cannot be done by reading source: it inserts a row
+        whose components do not sum to the total and requires PostgreSQL to refuse
+        it. A decomposition that silently failed to add up is precisely what the
+        constraint exists to prevent.
+        """
+        import sqlalchemy.exc
+
+        self._upgrade_head()
+
+        async def insert_unbalanced(conn: AsyncConnection) -> None:
+            await conn.execute(
+                sa.text(
+                    "INSERT INTO portfolio_attribution (snapshot_id, content_digest, "
+                    "account_id, portfolio_id, bucket, bucket_id, method, "
+                    "method_version, total_pnl, explained, residual, components, "
+                    "market_time, knowledge_time) VALUES "
+                    "('s1', 'd1', 'acc', 'pf', 'PORTFOLIO', 'pf', 'GREEK', 1, "
+                    "1000, 400, 100, '[]'::jsonb, now(), now())"
+                )
+            )
+
+        with self.assertRaises(sqlalchemy.exc.IntegrityError):
+            self._query(insert_unbalanced)
+
+    def test_a_balanced_attribution_row_is_accepted(self) -> None:
+        """The other direction, so the test above is not passing vacuously."""
+        self._upgrade_head()
+
+        async def insert_balanced(conn: AsyncConnection) -> None:
+            await conn.execute(
+                sa.text(
+                    "INSERT INTO portfolio_attribution (snapshot_id, content_digest, "
+                    "account_id, portfolio_id, bucket, bucket_id, method, "
+                    "method_version, total_pnl, explained, residual, components, "
+                    "market_time, knowledge_time) VALUES "
+                    "('s2', 'd2', 'acc', 'pf', 'PORTFOLIO', 'pf', 'GREEK', 1, "
+                    "1000, 581, 419, '[]'::jsonb, now(), now())"
+                )
+            )
+
+        self._query(insert_balanced)
+
+    def test_the_phase_11_snapshot_constraints_are_enforced(self) -> None:
+        self._upgrade_head()
+        defs = " ".join(
+            definition
+            for _, definition in self._rows(
+                "SELECT conname, pg_get_constraintdef(oid) FROM pg_constraint "
+                "WHERE conrelid = 'portfolio_snapshots'::regclass"
+            )
+        )
+        self.assertIn("knowledge_time", defs)
+        self.assertIn("content_digest", defs)
+
+        nullable = self._rows(
+            "SELECT is_nullable FROM information_schema.columns "
+            "WHERE table_name = 'portfolio_snapshots' "
+            "AND column_name = 'margin_utilisation'"
+        )
+        self.assertEqual([r[0] for r in nullable], ["YES"])
 
 
 if __name__ == "__main__":

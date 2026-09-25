@@ -30,6 +30,7 @@ from oipulse.api.features import router as features_router
 from oipulse.api.health import registry, router
 from oipulse.api.market_state import router as market_router
 from oipulse.api.paper_trading import router as paper_trading_router
+from oipulse.api.portfolio import router as portfolio_router
 from oipulse.api.reconciliation import router as reconciliation_router
 from oipulse.api.replay import router as replay_router
 from oipulse.api.research import router as research_router
@@ -102,6 +103,11 @@ def create_app(settings: Settings) -> FastAPI:
     # client cannot forge broker truth or force a transition. Live execution
     # remains off and every response says so.
     app.include_router(reconciliation_router)
+    # Phase 11. Portfolio, valuation, P&L and attribution. Any endpoint reading a
+    # past market_time requires knowledge_time -- a historical valuation must state
+    # what it was permitted to know, and defaulting to latest knowledge would answer
+    # a different question silently. Every attribution response carries its residual.
+    app.include_router(portfolio_router)
 
     # Readiness covers this process's own dependencies: PostgreSQL (durable truth),
     # Redis (coordination) and the packages the role needs locally. Phase 1 registered

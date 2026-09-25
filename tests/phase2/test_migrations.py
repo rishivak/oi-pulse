@@ -125,6 +125,14 @@ PHASE9_TABLES = ("risk_profiles", "risk_decisions")
 #: UNPARTITIONED: a reconciliation run is an immutable audit record.
 PHASE10_TABLES = ("trade_reconciliations", "trade_reconciliation_discrepancies")
 
+#: Phase 11 portfolio tables (`0011_phase11_portfolio_attribution`). Also
+#: UNPARTITIONED: a snapshot is an immutable decision artifact.
+PHASE11_TABLES = (
+    "portfolio_snapshots",
+    "portfolio_attribution",
+    "portfolio_position_reconciliations",
+)
+
 
 def _tables(path: Path, function: str, call: str) -> list[str]:
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=path.name)
@@ -171,15 +179,16 @@ class TestMigrationChain(unittest.TestCase):
                 "0008_phase8_paper_trading",
                 "0009_phase9_risk",
                 "0010_phase10_oms_reconciliation",
+                "0011_phase11_portfolio_attribution",
             ],
             "the chain must run legacy -> Phase 1 -> 2 -> 3 -> 4 -> 5 -> 6 -> 7 -> 8 "
-            "-> 9 -> 10, no branch",
+            "-> 9 -> 10 -> 11, no branch",
         )
 
     def test_exactly_one_head(self) -> None:
         downs = {rev.down_revision for rev in self.chain}
         heads = [rev.revision for rev in self.chain if rev.revision not in downs]
-        self.assertEqual(heads, ["0010_phase10_oms_reconciliation"])
+        self.assertEqual(heads, ["0011_phase11_portfolio_attribution"])
 
     def test_upgrading_from_the_legacy_revision_reaches_phase_2(self) -> None:
         """A database stamped at `002` must have a path to head without manual edits."""
@@ -202,6 +211,7 @@ class TestMigrationChain(unittest.TestCase):
                 "0008_phase8_paper_trading",
                 "0009_phase9_risk",
                 "0010_phase10_oms_reconciliation",
+                "0011_phase11_portfolio_attribution",
             ],
         )
 
@@ -643,6 +653,69 @@ class TestTableInventory(unittest.TestCase):
             with self.subTest(statement=dropped):
                 self.assertIn(dropped, source)
 
+    def test_phase_11_creates_exactly_the_portfolio_tables(self) -> None:
+        created = _tables(V2 / "0011_phase11_portfolio_attribution.py", "upgrade", "create_table")
+        self.assertEqual(sorted(created), sorted(PHASE11_TABLES))
+
+    def test_phase_11_forces_attribution_to_reconcile(self) -> None:
+        """`18` Phase 11's risk, enforced by the database.
+
+        With `residual NOT NULL` and `total_pnl = explained + residual`, a row
+        cannot exist that hides an unexplained amount by omitting it or by having
+        been balanced into a component.
+        """
+        source = (V2 / "0011_phase11_portfolio_attribution.py").read_text(encoding="utf-8")
+        self.assertIn("ck_portfolio_attribution_reconciles", source)
+        self.assertIn("total_pnl = explained + residual", source)
+        self.assertIn('sa.Column("residual", sa.Numeric(20, 4), nullable=False)', source)
+
+    def test_phase_11_stores_both_times_separately(self) -> None:
+        """A snapshot at T on knowledge to K is not one at T on latest knowledge."""
+        source = (V2 / "0011_phase11_portfolio_attribution.py").read_text(encoding="utf-8")
+        self.assertIn(
+            'sa.Column("market_time", sa.DateTime(timezone=True), nullable=False)', source
+        )
+        self.assertIn(
+            'sa.Column("knowledge_time", sa.DateTime(timezone=True), nullable=False)', source
+        )
+        self.assertIn("ck_portfolio_snapshots_knowledge_after_market", source)
+
+    def test_phase_11_keeps_margin_nullable(self) -> None:
+        """NULL means not known; 0 would read as no margin used (brief §22)."""
+        source = (V2 / "0011_phase11_portfolio_attribution.py").read_text(encoding="utf-8")
+        self.assertIn('sa.Column("margin_utilisation", sa.Numeric(12, 8), nullable=True)', source)
+
+    def test_phase_11_stores_contract_economics_per_position(self) -> None:
+        """`07` §4.3: a lot-size revision must not rewrite historical exposure.
+
+        A join to the current instrument version at read time would do exactly
+        that, so the economics in force are stored on the position row.
+        """
+        source = (V2 / "0011_phase11_portfolio_attribution.py").read_text(encoding="utf-8")
+        for column in ("lot_size", "contract_multiplier", "multiplier_source", "cost_basis_method"):
+            with self.subTest(column=column):
+                self.assertIn(f'"{column}"', source)
+
+    def test_phase_11_introduces_no_phase_12_table(self) -> None:
+        """The terminal is Phase 12. Checks tables created, not words in the file."""
+        created = _tables(V2 / "0011_phase11_portfolio_attribution.py", "upgrade", "create_table")
+        for table in created:
+            for banned in ("terminal", "layout", "widget", "dashboard", "user_pref"):
+                with self.subTest(table=table, banned=banned):
+                    self.assertNotIn(banned, table.lower())
+        self.assertTrue(all(t.startswith("portfolio_") for t in created))
+
+    def test_phase_11_downgrade_removes_the_columns_it_added(self) -> None:
+        source = (V2 / "0011_phase11_portfolio_attribution.py").read_text(encoding="utf-8")
+        for dropped in (
+            'op.drop_column("portfolio_positions", "portfolio_id")',
+            'op.drop_column("portfolio_positions", "lot_size")',
+            'op.drop_column("portfolio_positions", "contract_multiplier")',
+            "ck_portfolio_positions_lot_size_positive",
+        ):
+            with self.subTest(statement=dropped):
+                self.assertIn(dropped, source)
+
     def test_downgrade_mirrors_upgrade_in_all_revisions(self) -> None:
         """A downgrade that forgets a table leaves a schema the next upgrade cannot build."""
         for name in (
@@ -656,6 +729,7 @@ class TestTableInventory(unittest.TestCase):
             "0008_phase8_paper_trading.py",
             "0009_phase9_risk.py",
             "0010_phase10_oms_reconciliation.py",
+            "0011_phase11_portfolio_attribution.py",
         ):
             with self.subTest(revision=name):
                 created = _tables(V2 / name, "upgrade", "create_table")
@@ -684,6 +758,7 @@ class TestTableInventory(unittest.TestCase):
             "0008_phase8_paper_trading.py",
             "0009_phase9_risk.py",
             "0010_phase10_oms_reconciliation.py",
+            "0011_phase11_portfolio_attribution.py",
         ):
             source = (V2 / name).read_text(encoding="utf-8")
             for table in legacy:
