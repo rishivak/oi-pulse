@@ -65,14 +65,22 @@ class RouteExtraction(unittest.TestCase):
         live = [k for k in self.keys if "/trading/" in k and "/paper-trading/" not in k]
         self.assertEqual(live, [])
 
-    def test_the_two_specified_but_unimplemented_surfaces_are_absent(self) -> None:
-        """`/journal` and `/stream` are in `12-API_SPEC.md` §3 and are not served.
+    def test_the_stream_surface_is_still_absent(self) -> None:
+        """`/stream` is in `12-API_SPEC.md` §3 and is not served.
 
-        The Journal screen is withheld and the terminal polls instead of streaming
-        because of exactly this. If either appears, both decisions should be revisited.
+        The terminal polls instead of streaming because of exactly this. If it
+        appears, `lib/terminal/realtime.ts` should be revisited -- and a test there
+        asserts the constant and the contract agree, so the two cannot drift.
         """
-        self.assertEqual([k for k in self.keys if "/journal" in k], [])
         self.assertEqual([k for k in self.keys if "/stream" in k], [])
+
+    def test_the_journal_read_contract_is_served(self) -> None:
+        """Added by the Phase 12 remediation; the screen ships against it."""
+        self.assertIn("GET /journal/entries", self.keys)
+        self.assertIn("GET /journal/entries/{entry_id}", self.keys)
+        # Read only: `12` §3 says CRUD, and writing is a domain action no phase
+        # specifies an authoring path for.
+        self.assertEqual([k for k in self.keys if "/journal" in k and not k.startswith("GET ")], [])
 
     def test_meta_keys_are_extracted_where_the_return_is_literal(self) -> None:
         signals = next(r for r in self.routes if r["path"] == "/signals" and r["method"] == "GET")
@@ -149,3 +157,41 @@ class Determinism(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DigestStability(unittest.TestCase):
+    """The digest must describe the content, not the checkout.
+
+    This repository has `core.autocrlf=true` and no `.gitattributes`, so a checkout
+    rewrites every `.py` file to CRLF while git's stored blobs stay LF. Hashing raw
+    bytes made the same commit produce two different digests on two machines, and
+    `--check` failed on a tree where `git diff` was empty — which is exactly what
+    happened during a rebase.
+    """
+
+    def test_line_endings_do_not_change_the_digest(self) -> None:
+        import shutil
+        import tempfile
+
+        from export_api_contract import _source_digest
+
+        with tempfile.TemporaryDirectory(prefix="digest-eol-") as raw:
+            root = Path(raw)
+            shutil.copytree(
+                REPO / "oipulse",
+                root / "oipulse",
+                ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
+            )
+            converted = 0
+            for path in (root / "oipulse").rglob("*.py"):
+                original = path.read_bytes()
+                flipped = (
+                    original.replace(b"\r\n", b"\n")
+                    if b"\r\n" in original
+                    else original.replace(b"\n", b"\r\n")
+                )
+                if flipped != original:
+                    converted += 1
+                path.write_bytes(flipped)
+            self.assertGreater(converted, 50, "no files were converted; the test is inert")
+            self.assertEqual(_source_digest(REPO), _source_digest(root))

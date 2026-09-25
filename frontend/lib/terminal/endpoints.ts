@@ -13,13 +13,13 @@
  * the backend does not serve, which is the mechanical form of `18-ROADMAP.md` Phase
  * 12's "No screen ships ahead of its backend — no 'Coming soon' pages."
  *
- * Two absences are deliberate and are documented rather than filled in:
+ * One absence is deliberate and is documented rather than filled in:
+ * **`/stream/events`** is specified (`12` §3) but not implemented. There is no
+ * function for it. See `lib/terminal/realtime.ts`.
  *
- * - **`/stream/events`** is specified (`12` §3) but not implemented. There is no
- *   function for it. See `lib/terminal/realtime.ts`.
- * - **`/journal`** is specified (`12` §3) but not implemented; the `journal_entries`
- *   table exists from Phase 8 and nothing reads it over HTTP. See
- *   `lib/terminal/screens.ts`, which records the Journal screen as withheld.
+ * `/journal` was the other, and is no longer: the Phase 12 remediation added the
+ * read half of the contract `12` §3 specifies, so the Journal screen has a real
+ * backend and ships.
  */
 
 import type { HttpMethod } from "@/lib/terminal/errors";
@@ -276,6 +276,28 @@ export const risk = {
     endpoint("GET", "/risk/decisions/{intent_id}/{sequence_no}", { intent_id, sequence_no }),
   engageKillSwitch: () => endpoint("POST", "/risk/kill-switch"),
   clearKillSwitch: () => endpoint("DELETE", "/risk/kill-switch"),
+};
+
+// ------------------------------------------------------------------ journal
+
+/**
+ * Read-only. `12` §3 says "CRUD on entries"; writing is a domain action and
+ * `journal_entries` carries a `source_event_key`, so entries are derived from
+ * events rather than authored. No phase specifies an authoring path and none is
+ * invented, so there is no create, update or delete function here.
+ */
+export const journal = {
+  entries: (q: {
+    account_id: string;
+    entry_type?: string;
+    order_id?: string;
+    since?: string;
+    until?: string;
+    cursor?: string;
+    limit?: number;
+  }) => endpoint("GET", "/journal/entries", {}, q),
+  entry: (entry_id: string) =>
+    endpoint("GET", "/journal/entries/{entry_id}", { entry_id }),
 };
 
 // ----------------------------------------------------------- OMS / reconcile

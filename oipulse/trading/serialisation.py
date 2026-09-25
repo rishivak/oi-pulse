@@ -19,6 +19,7 @@ from oipulse.backtest.fills import Fill
 from oipulse.trading.accounts import PaperAccount
 from oipulse.trading.audit import AuditChain
 from oipulse.trading.intents import TradeIntent
+from oipulse.trading.journal import JOURNAL_WRITER_IMPLEMENTED
 from oipulse.trading.ledger import PaperLedgerSnapshot
 from oipulse.trading.orders import PaperOrder
 from oipulse.trading.risk import RiskDecisionRecord
@@ -28,6 +29,8 @@ __all__ = [
     "audit_to_dict",
     "fills_to_dict",
     "intent_to_dict",
+    "journal_entry_to_dict",
+    "journal_page_to_dict",
     "order_to_dict",
     "orders_to_dict",
     "positions_to_dict",
@@ -162,4 +165,38 @@ def audit_to_dict(chain: AuditChain) -> dict[str, Any]:
             risk_evaluated=chain.risk_evaluated,
             assumption_based=chain.is_assumption_based,
         ),
+    }
+
+
+# --------------------------------------------------------------------- journal
+
+
+def journal_page_to_dict(page: Any, *, account_id: str) -> dict[str, Any]:
+    """A page of journal entries, with why it looks the way it does.
+
+    `meta.availability` is the field that matters. An empty `data` means one of two
+    unrelated things — the account recorded no cash movement, or nothing in this
+    build writes journal entries at all — and a client that could not tell them
+    apart would read a system gap as a quiet account. `12-API_SPEC.md` §3 specifies
+    the resource; `oipulse/trading/journal.py` explains why the distinction is
+    carried rather than flattened.
+    """
+    return {
+        "data": [entry.as_dict() for entry in page.entries],
+        "meta": {
+            "account_id": account_id,
+            "count": len(page.entries),
+            "availability": page.availability.value,
+            "next_cursor": page.next_cursor,
+            # Stated on every response so the absence is a property of the answer
+            # rather than something a reader has to know already.
+            "writer_implemented": JOURNAL_WRITER_IMPLEMENTED,
+        },
+    }
+
+
+def journal_entry_to_dict(entry: Any) -> dict[str, Any]:
+    return {
+        "data": entry.as_dict(),
+        "meta": {"writer_implemented": JOURNAL_WRITER_IMPLEMENTED},
     }

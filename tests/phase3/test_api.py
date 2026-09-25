@@ -21,6 +21,7 @@ if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
 from oipulse.marketstate.state import CoherenceMode
+from tests._http_auth import authenticate
 from tests.phase3._fixtures import UNDERLYING, at, builder, populated_store
 
 SOURCE = (REPO / "oipulse/api/market_state.py").read_text(encoding="utf-8")
@@ -173,6 +174,9 @@ class TestFastAPIEndpoint(unittest.TestCase):
         self.service = StateService(self.b)
         self.app.state.state_service = self.service
         self.client = TestClient(self.app)
+        # The Phase 12 gate protects every route; a client without a
+        # session now tests the 401, which is covered in tests/phase12/.
+        authenticate(self.app, self.client)
 
     def test_valid_request_with_default_knowledge_time(self):
         resp = self.client.get(
@@ -229,6 +233,9 @@ class TestFastAPIEndpoint(unittest.TestCase):
 
         unconfigured_app = create_app(self.settings)
         client = TestClient(unconfigured_app)
+        # The Phase 12 gate protects every route; a client without a
+        # session now tests the 401, which is covered in tests/phase12/.
+        authenticate(unconfigured_app, client)
         resp = client.get(
             "/market/state",
             params={

@@ -276,11 +276,20 @@ def _source_digest(root: Path) -> str:
 
     Lets `--check` distinguish "the backend changed and nobody regenerated" from
     "the generator changed", which are different problems with different fixes.
+
+    **Line endings are normalised before hashing.** This repository has
+    `core.autocrlf=true` and no `.gitattributes`, so a checkout rewrites every `.py`
+    file to CRLF while git's stored blobs stay LF. Hashing raw bytes therefore made
+    the digest a property of *how the tree was checked out* rather than of its
+    content: the same commit produced two different digests on two machines, and
+    `--check` failed on a tree where `git diff` was empty. That happened, on a
+    rebase, and is what this line prevents.
     """
     digest = hashlib.sha256()
     for path in sorted((root / PACKAGE).rglob("*.py")):
         digest.update(path.relative_to(root).as_posix().encode())
-        digest.update(path.read_bytes())
+        text = path.read_text(encoding="utf-8")
+        digest.update(text.replace("\r\n", "\n").encode("utf-8"))
     return digest.hexdigest()
 
 

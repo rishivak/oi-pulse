@@ -12,25 +12,32 @@
  *
  * ### How many screens
  *
- * The design says three slightly different things, and they reconcile to one
- * implementation. `13-FRONTEND_IA.md` §2 draws fourteen names: a Command Center
- * that "summarizes and routes; it does not contain everything", and thirteen
- * screens beneath it. `18-ROADMAP.md` Phase 12's objective is "The twelve workflow
- * screens" while its deliverables list all fourteen names.
- * `20-ARCHITECTURE_FREEZE.md` §286 states the gate: "twelve screens, none ahead of
- * its backend".
+ * The design gives three counts and they do not all agree, so this states what was
+ * built and why rather than pretending the arithmetic resolves.
  *
- * The qualifier decides it. **Journal has no read API.** `journal_entries` exists as
- * a table from Phase 8 and `12-API_SPEC.md` §3 specifies `/journal`, but no router
- * serves it and nothing in `oipulse/api/` mentions it. `13` §2 forbids shipping it
- * anyway — "Screens appear **only when their backend capability is real**. No
- * 'Coming soon' pages — the legacy app shipped three stubs over working endpoints,
- * which is worse than not listing them." So Journal is withheld, twelve workflow
- * screens remain, and the Command Center routes between them. All three statements
- * hold at once.
+ * `13-FRONTEND_IA.md` §2 draws **fourteen** names: a Command Center that
+ * "summarizes and routes; it does not contain everything", and thirteen screens
+ * beneath it. `18-ROADMAP.md` Phase 12's objective says "The twelve workflow
+ * screens" while its own deliverables line lists all fourteen — the roadmap
+ * contradicts itself, and no reading makes both halves true.
+ * `20-ARCHITECTURE_FREEZE.md` §286 gives the gate that is actually testable:
+ * **"twelve screens, none ahead of its backend"**.
  *
- * The withheld screen is recorded in {@link WITHHELD_SCREENS} rather than deleted,
- * because a gap that is written down is a gap someone can close.
+ * The qualifier is the operative part, and `13` §2 states it as a rule: "Screens
+ * appear **only when their backend capability is real**. No 'Coming soon' pages —
+ * the legacy app shipped three stubs over working endpoints, which is worse than
+ * not listing them."
+ *
+ * All fourteen now satisfy it. Journal was withheld in the first Phase 12 pass
+ * because `12-API_SPEC.md` §3 specified `/journal` and no router served it; the
+ * remediation added the read half of that contract, so the screen has a real
+ * backend and ships. {@link WITHHELD_SCREENS} is consequently empty, and the
+ * `none ahead of its backend` condition holds for every entry below.
+ *
+ * What the Journal screen shows is the Phase 8 accounting journal, not the
+ * free-text hypothesis notes §6 also describes — those have no schema in any phase
+ * and are not invented. `lib/terminal/screens/journal.ts` carries that distinction
+ * into the UI.
  */
 
 export type BackendDomain =
@@ -310,6 +317,21 @@ export const WORKFLOW_SCREENS: readonly ScreenSpec[] = [
     tests: ["frontend/tests/portfolio.test.ts", "frontend/tests/attribution.test.ts"],
   },
   {
+    id: "journal",
+    title: "Journal",
+    question: "What was I thinking?",
+    route: "/terminal/journal",
+    domains: ["PAPER_TRADING"],
+    apis: ["GET /journal/entries", "GET /journal/entries/{entry_id}"],
+    interactions: [
+      "filter by entry type, order and period; cursor pagination",
+      "every entry links to the order and fill that caused it",
+      "an empty page says whether the account was quiet or the writer is absent",
+    ],
+    temporal: true,
+    tests: ["frontend/tests/journal.test.ts"],
+  },
+  {
     id: "risk",
     title: "Risk",
     question: "What are my limits and utilization?",
@@ -357,28 +379,18 @@ export interface WithheldScreen {
 }
 
 /**
- * Named in the design, deliberately not built.
+ * Named in the design and deliberately not built. Currently empty.
  *
- * Not rendered anywhere, not linked from the navigation, and not present as a
- * disabled item — `13` §2's no-stub rule means the screen does not exist in the UI
- * at all. This record exists so the omission is deliberate and legible rather than
- * looking like something that was forgotten.
+ * The list is kept rather than deleted because the rule it serves outlives the one
+ * entry it used to hold: a screen whose backend is not real must not appear in the
+ * UI at all — not greyed out, not "coming soon" — and when that happens again the
+ * omission should be written down here rather than looking like a lapse.
+ *
+ * Journal was the only entry. The Phase 12 remediation implemented the `/journal`
+ * read contract `12-API_SPEC.md` §3 specifies, so it moved into
+ * {@link WORKFLOW_SCREENS}.
  */
-export const WITHHELD_SCREENS: readonly WithheldScreen[] = [
-  {
-    id: "journal",
-    title: "Journal",
-    question: "What was I thinking?",
-    specifiedIn: "13-FRONTEND_IA.md §6 and 12-API_SPEC.md §3 (`/journal`)",
-    reason:
-      "No read API exists. `journal_entries` is created by migration 0008 and written " +
-      "by the Phase 8 runtime, but no router serves it, so a Journal screen could only " +
-      "show an empty list — indistinguishable from there being no entries.",
-    unblockedBy:
-      "a `/journal` router implementing the CRUD `12-API_SPEC.md` §3 specifies, after " +
-      "which this entry moves into WORKFLOW_SCREENS with its routes listed in `apis`",
-  },
-] as const;
+export const WITHHELD_SCREENS: readonly WithheldScreen[] = [] as const;
 
 export function screenById(id: string): ScreenSpec | undefined {
   return SCREENS.find((s) => s.id === id);

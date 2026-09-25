@@ -11,7 +11,7 @@
 // is only ever used as one.
 
 export const CONTRACT_VERSION = 1;
-export const CONTRACT_SOURCE_DIGEST = "edbc9126a61c44dfe3e20838368f6c2826b264e2e148dc6ea3dfa9875388b099";
+export const CONTRACT_SOURCE_DIGEST = "b0df328d11e3bfeaf5ba07042a40503b0dae02657f865678906924c6baf88768";
 
 export interface BackendRoute {
   readonly method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
@@ -40,6 +40,8 @@ export const ROUTES: readonly BackendRoute[] = [
   { method: "GET", path: "/features", operation: "list_features", module: "oipulse/api/features.py", metaKeys: ["count", "identifiers", "scopes"], metaPartial: false },
   { method: "GET", path: "/features/{identifier}/values", operation: "feature_values", module: "oipulse/api/features.py", metaKeys: ["decision_time", "feature", "knowledge_time", "market_time", "semantics"], metaPartial: false },
   { method: "GET", path: "/features/{identifier}/versions/{version}", operation: "feature_definition", module: "oipulse/api/features.py", metaKeys: ["available_versions"], metaPartial: false },
+  { method: "GET", path: "/journal/entries", operation: "list_entries", module: "oipulse/api/journal.py", metaKeys: [], metaPartial: true },
+  { method: "GET", path: "/journal/entries/{entry_id}", operation: "get_entry", module: "oipulse/api/journal.py", metaKeys: [], metaPartial: true },
   { method: "GET", path: "/market/state", operation: "market_state", module: "oipulse/api/market_state.py", metaKeys: [], metaPartial: true },
   { method: "GET", path: "/ops/health", operation: "health", module: "oipulse/api/health.py", metaKeys: [], metaPartial: true },
   { method: "GET", path: "/ops/ready", operation: "ready", module: "oipulse/api/health.py", metaKeys: [], metaPartial: true },
@@ -146,6 +148,7 @@ export const MODELS: Readonly<Record<string, BackendModel>> = {
   "HorizonResult": { keys: ["breakdowns", "distribution", "excursion", "horizon_seconds", "incomplete_windows"], partial: false },
   "IntentConstraints": { keys: ["all_or_none", "max_slippage", "valid_until"], partial: false },
   "IntentLeg": { keys: ["instrument_id", "limit_price", "order_type", "quantity", "side"], partial: false },
+  "JournalEntry": { keys: ["account_id", "cash_after", "cash_delta", "entry_id", "entry_type", "fees_delta", "fill_key", "occurred_at", "order_id", "realized_pnl_delta", "source_event_key"], partial: false },
   "KillSwitchState": { keys: ["engaged", "engaged_at", "halted_strategies", "reason"], partial: false },
   "LedgerSnapshot": { keys: ["as_of", "cash", "fees", "fills_applied", "gross_pnl", "net_pnl", "positions", "realized_pnl", "slippage_cost", "unmarked_instruments", "unrealized_pnl"], partial: false },
   "LimitEvaluation": { keys: ["category", "detail", "headroom", "limit_id", "limit_value", "observed_value", "status"], partial: false },
@@ -205,6 +208,8 @@ export const SERIALIZERS: Readonly<Record<string, BackendModel>> = {
   "fills_to_dict": { keys: ["data", "meta"], partial: false },
   "greeks_to_dict": { keys: ["data", "meta"], partial: false },
   "intent_to_dict": { keys: ["data", "meta"], partial: false },
+  "journal_entry_to_dict": { keys: ["data", "meta"], partial: false },
+  "journal_page_to_dict": { keys: ["data", "meta"], partial: false },
   "limit_status_to_dict": { keys: ["data", "meta"], partial: false },
   "occurrence_to_dict": { keys: ["acknowledged_at", "acknowledged_by", "attempts", "available_at", "channel", "dedup_key", "delivered", "observed_at", "occurrence_id", "rule_config_digest", "rule_id", "severity", "signal_id", "signal_type", "status", "triggered_at", "underlying_id"], partial: false },
   "oms_order_to_dict": { keys: ["data", "meta"], partial: false },

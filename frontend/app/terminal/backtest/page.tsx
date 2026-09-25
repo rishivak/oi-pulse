@@ -20,8 +20,10 @@ import { emptyState, qualityBadge } from "@/lib/terminal/quality";
 import { requireScreen } from "@/lib/terminal/screens";
 import { backtestSummary } from "@/lib/terminal/screens/research";
 import { backtest } from "@/lib/terminal/endpoints";
+import { presentValue } from "@/lib/terminal/quality";
 import { DenseTable, Value } from "@/components/terminal/primitives";
 import { QueryPanel } from "@/components/terminal/QueryPanel";
+import { TimeSeriesChart } from "@/components/terminal/TimeSeriesChart";
 import { ScreenFrame } from "@/components/terminal/ScreenFrame";
 import { useTerminalQuery } from "@/components/terminal/useTerminalQuery";
 import { useViewState } from "@/components/terminal/useViewState";
@@ -36,6 +38,11 @@ export default function BacktestPage() {
   );
   const resultQuery = useTerminalQuery<BacktestResultDto>(
     selected === null ? null : backtest.results(selected),
+  );
+  // `13-FRONTEND_IA.md` §5 asks for an equity curve. It is its own endpoint, so
+  // it is its own request rather than being derived from the trade list here.
+  const curveQuery = useTerminalQuery<readonly Record<string, unknown>[]>(
+    selected === null ? null : backtest.equityCurve(selected),
   );
   const quality = resultQuery.data?.quality ?? runsQuery.data?.quality ?? qualityBadge(undefined);
   const summary = resultQuery.data ? backtestSummary(resultQuery.data.data) : null;
@@ -69,6 +76,37 @@ export default function BacktestPage() {
             )}
           </QueryPanel>
         </section>
+
+        {selected !== null ? (
+          <section aria-label="Equity curve">
+            <h2 className="font-mono text-xs text-terminal-muted">EQUITY CURVE</h2>
+            <QueryPanel
+              query={curveQuery}
+              label="equity curve"
+              empty={emptyState("NO_DATA_FOR_PERIOD")}
+              isEmpty={(envelope) => envelope.data.length === 0}
+            >
+              {(envelope) => (
+                <TimeSeriesChart
+                  label="Equity over market time"
+                  unit="INR"
+                  knowledgeTime={envelope.meta.knowledgeTime}
+                  quality={envelope.quality}
+                  rows={envelope.data.map((point) => ({
+                    marketTime:
+                      typeof point.market_time === "string" ? point.market_time : null,
+                    value: presentValue(
+                      typeof point.equity === "string" || typeof point.equity === "number"
+                        ? String(point.equity)
+                        : null,
+                      "NOT_COMPUTED",
+                    ),
+                  }))}
+                />
+              )}
+            </QueryPanel>
+          </section>
+        ) : null}
 
         {selected === null ? (
           <p className="text-xs text-terminal-muted">Select a run.</p>

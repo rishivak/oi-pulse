@@ -20,7 +20,19 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
 
-_IGNORE = shutil.ignore_patterns("__pycache__", "*.pyc", "node_modules", ".next", ".ruff_cache")
+#: `.claude` and `.mcp.json` are session tooling artifacts the sandbox makes
+#: unreadable, and `shutil.copytree` raises on them rather than skipping. Excluded
+#: by name; everything the guards read is source under the three copied trees.
+_IGNORE = shutil.ignore_patterns(
+    "__pycache__",
+    "*.pyc",
+    "node_modules",
+    ".next",
+    ".ruff_cache",
+    ".claude",
+    ".mcp.json",
+    ".git",
+)
 
 
 @contextmanager
@@ -28,7 +40,7 @@ def workspace() -> Iterator[Path]:
     """Yield a temporary root containing `frontend/` and `oipulse/`."""
     with tempfile.TemporaryDirectory(prefix="phase12-guard-") as raw:
         root = Path(raw)
-        for name in ("frontend", "oipulse"):
+        for name in ("frontend", "oipulse", "tools"):
             shutil.copytree(REPO / name, root / name, ignore=_IGNORE)
         yield root
 

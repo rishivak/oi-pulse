@@ -131,6 +131,9 @@ ARITHMETIC_ALLOWED = {
     "frontend/lib/terminal/screens/optionSurface.ts",  # numeric strike ordering
     "frontend/components/terminal/AttributionTable.tsx",  # segment widths
     "frontend/components/terminal/primitives.tsx",  # skeleton row count
+    # Epoch-second conversion for the chart axis. Not an analytic: it changes the
+    # representation of an instant the backend supplied and computes no quantity.
+    "frontend/lib/terminal/screens/chartData.ts",
 }
 #: Binary `*`, `%`, or a spaced `/`. `**` (exponent) is caught by the first.
 ARITHMETIC = re.compile(r"(?<![*/])\*(?!\*?/)|(?<!\w)%(?!\w)|\s/\s")
