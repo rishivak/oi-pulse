@@ -14,10 +14,12 @@ from __future__ import annotations
 import ast
 import subprocess
 import sys
+import tempfile
 import unittest
 from datetime import timedelta
 from decimal import Decimal
 from pathlib import Path
+from typing import Any
 
 from oipulse.trading.orders import OrderState, RejectReason
 from oipulse.trading.risk import (
@@ -617,6 +619,300 @@ class TestOrderStateUnaffected(unittest.TestCase):
         p8.submit(rt, rows, p8.intent())
         snapshot = rt.ledger.snapshot(as_of=at(3), marks=p8.marks(rows, 3))
         self.assertEqual(snapshot.net_pnl, snapshot.gross_pnl - snapshot.fees)
+
+
+class TestRiskAuthorizationGuardMutation(unittest.TestCase):
+    """Mutation tests for tools/check_risk_authorization.py."""
+
+    def test_missing_order_authorization_fields_fails_guard(self) -> None:
+        from tools.check_risk_authorization import _check_order_fields
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            (tmp / "oipulse/trading").mkdir(parents=True)
+            # Write PaperOrder without authorizing_decision_sequence
+            mutated_orders = (REPO / "oipulse/trading/orders.py").read_text(encoding="utf-8")
+            mutated_orders = mutated_orders.replace(
+                "authorizing_decision_sequence: int | None = None",
+                "# authorizing_decision_sequence removed",
+            )
+            (tmp / "oipulse/trading/orders.py").write_text(mutated_orders, encoding="utf-8")
+            findings = _check_order_fields(tmp)
+            self.assertTrue(
+                any("missing" in f for f in findings), f"Expected failure but got {findings}"
+            )
+
+    def test_construction_outside_runtime_fails_guard(self) -> None:
+        from tools.check_risk_authorization import _check_single_constructor
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            (tmp / "oipulse/trading").mkdir(parents=True)
+            (tmp / "oipulse/trading/orders.py").write_text("# orders\n", encoding="utf-8")
+            (tmp / "oipulse/trading/runtime.py").write_text("# runtime\n", encoding="utf-8")
+            # Write a PaperOrder call in brokers.py
+            (tmp / "oipulse/trading/brokers.py").write_text(
+                "def bad():\n    return PaperOrder(order_id='x')\n",
+                encoding="utf-8",
+            )
+            findings = _check_single_constructor(tmp)
+            self.assertTrue(
+                any("constructs a PaperOrder" in f for f in findings),
+                f"Expected failure but got {findings}",
+            )
+
+    def test_order_construction_before_actionable_check_fails_guard(self) -> None:
+        from tools.check_risk_authorization import _check_approval_precedes_construction
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            (tmp / "oipulse/trading").mkdir(parents=True)
+            # In submit(), construct order first, then check is_actionable_at
+            mutated_submit = """
+class PaperTradingRuntime:
+    def submit(self, intent, *, decision_state, execution_state, at):
+        order = PaperOrder(order_id='o1')
+        if not decision.is_actionable_at(at):
+            return None
+        return order
+"""
+            (tmp / "oipulse/trading/runtime.py").write_text(mutated_submit, encoding="utf-8")
+            findings = _check_approval_precedes_construction(tmp)
+            self.assertTrue(
+                any("constructed before" in f for f in findings),
+                f"Expected failure but got {findings}",
+            )
+
+    def test_risk_importing_trading_orders_fails_guard(self) -> None:
+        from tools.check_risk_authorization import _check_risk_independence
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            (tmp / "oipulse/trading/risk").mkdir(parents=True)
+            (tmp / "oipulse/trading/risk/policy.py").write_text(
+                "import oipulse.trading.orders\n", encoding="utf-8"
+            )
+            findings = _check_risk_independence(tmp)
+            self.assertTrue(
+                any("imports oipulse.trading.orders" in f for f in findings),
+                f"Expected failure but got {findings}",
+            )
+
+    def test_risk_mutating_intent_fails_guard(self) -> None:
+        from tools.check_risk_authorization import _check_risk_does_not_mutate_intents
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            (tmp / "oipulse/trading/risk").mkdir(parents=True)
+            (tmp / "oipulse/trading/risk/engine.py").write_text(
+                "def evaluate(intent):\n    intent.quantity = 10\n",
+                encoding="utf-8",
+            )
+            findings = _check_risk_does_not_mutate_intents(tmp)
+            self.assertTrue(
+                any("assigns to intent" in f for f in findings),
+                f"Expected failure but got {findings}",
+            )
+
+    def test_decision_authorizes_without_intent_id_check_fails_guard(self) -> None:
+        from tools.check_risk_authorization import _check_decision_binds_one_intent
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            (tmp / "oipulse/trading/risk").mkdir(parents=True)
+            # authorizes() without comparing intent_id == self.intent_id
+            mutated_decision = """
+class RiskDecisionRecord:
+    def authorizes(self, intent_id, *, at):
+        return self.is_actionable_at(at)
+"""
+            (tmp / "oipulse/trading/risk/decision.py").write_text(
+                mutated_decision, encoding="utf-8"
+            )
+            findings = _check_decision_binds_one_intent(tmp)
+            self.assertTrue(
+                any("does not compare" in f for f in findings),
+                f"Expected failure but got {findings}",
+            )
+
+
+class TestRiskApiRuntime(unittest.TestCase):
+    """Runtime FastAPI HTTP tests against `/risk` endpoints."""
+
+    def setUp(self) -> None:
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+
+        from oipulse.api.risk import router
+        from oipulse.trading.risk import (
+            KillSwitchState,
+            RiskPolicy,
+        )
+
+        self.policy = fx.policy()
+        self.state = fx.state()
+        self.decision = fx.evaluate(eng=fx.engine(), it=fx.intent(), st=self.state)  # type: ignore[assignment]
+        self.kill_switch = KillSwitchState()
+
+        class MockRiskService:
+            def __init__(
+                self, policy: RiskPolicy, state: Any, decision: RiskDecisionRecord
+            ) -> None:
+                self._policies: dict[tuple[str, int], RiskPolicy] = {
+                    (policy.policy_id, policy.version): policy
+                }
+                self._state = state
+                self._decisions: dict[str, list[RiskDecisionRecord]] = {
+                    decision.intent_id: [decision]
+                }
+                self._kill_switch = KillSwitchState()
+
+            def list_policies(self) -> list[RiskPolicy]:
+                return list(self._policies.values())
+
+            def get_policy(self, policy_id: str, version: int) -> RiskPolicy | None:
+                return self._policies.get((policy_id, version))
+
+            def register_policy(self, body: dict[str, Any]) -> RiskPolicy:
+                pol_id = body.get("policy_id", "P-TEST")
+                ver = int(body.get("version", 1))
+                if (pol_id, ver) in self._policies:
+                    raise PermissionError(f"policy {pol_id}@v{ver} already exists")
+                pol = fx.policy(policy_id=pol_id, version=ver)
+                self._policies[(pol_id, ver)] = pol
+                return pol
+
+            def risk_state(self, account_id: str) -> Any | None:
+                if account_id == "acc-unknown":
+                    return None
+                return self._state
+
+            def limit_status(self, account_id: str) -> tuple[RiskDecisionRecord, RiskPolicy] | None:
+                if account_id == "acc-unknown":
+                    return None
+                return (
+                    self._decisions[next(iter(self._decisions.keys()))][0],
+                    self.list_policies()[0],
+                )
+
+            def evaluate(self, body: dict[str, Any]) -> tuple[RiskDecisionRecord, Any]:
+                acct = body.get("account_id")
+                if not acct:
+                    raise ValueError("account_id is required")
+                it = fx.intent(account_id=acct)
+                dec = fx.engine().evaluate(it, self._state, sequence_no=1, at=at(0))
+                self._decisions.setdefault(it.intent_id, []).append(dec)
+                return (dec, at(0))
+
+            def decisions_for(self, intent_id: str) -> list[RiskDecisionRecord]:
+                return self._decisions.get(intent_id, [])
+
+            def decision(self, intent_id: str, sequence_no: int) -> RiskDecisionRecord | None:
+                for d in self._decisions.get(intent_id, []):
+                    if d.sequence_no == sequence_no:
+                        return d
+                return None
+
+            def engage_kill_switch(self, body: dict[str, Any]) -> KillSwitchState:
+                self._kill_switch = KillSwitchState(
+                    engaged=True, reason=body.get("reason", "manual halt")
+                )
+                return self._kill_switch
+
+            def clear_kill_switch(self) -> KillSwitchState:
+                self._kill_switch = KillSwitchState(engaged=False)
+                return self._kill_switch
+
+            def market_time(self) -> Any:
+                return at(0)
+
+        self.service = MockRiskService(self.policy, self.state, self.decision)
+        self.app = FastAPI()
+        self.app.include_router(router)
+        self.app.state.risk = self.service
+        self.client = TestClient(self.app)
+
+    def test_service_unavailable_when_unconfigured(self) -> None:
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+
+        from oipulse.api.risk import router
+
+        empty_app = FastAPI()
+        empty_app.include_router(router)
+        client = TestClient(empty_app)
+        res = client.get("/risk/profiles")
+        self.assertEqual(res.status_code, 503)
+
+    def test_list_and_get_policy(self) -> None:
+        res = self.client.get("/risk/profiles")
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.json()["meta"]["count"], 1)
+
+        res = self.client.get(
+            f"/risk/profiles/{self.policy.policy_id}/versions/{self.policy.version}"
+        )
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.json()["data"]["policy_id"], self.policy.policy_id)
+
+        res = self.client.get("/risk/profiles/nonexistent/versions/99")
+        self.assertEqual(res.status_code, 404)
+
+    def test_put_profile(self) -> None:
+        # Register new version
+        res = self.client.put(
+            "/risk/profiles",
+            json={"policy_id": "P-NEW", "version": 2},
+        )
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.json()["data"]["policy_id"], "P-NEW")
+
+        # Conflict on duplicate version
+        res_dup = self.client.put(
+            "/risk/profiles",
+            json={"policy_id": "P-NEW", "version": 2},
+        )
+        self.assertEqual(res_dup.status_code, 409)
+
+    def test_get_risk_state_and_status(self) -> None:
+        res = self.client.get("/risk/state/acc-test")
+        self.assertEqual(res.status_code, 200)
+        self.assertIn("risk_state_ref", res.json()["meta"])
+
+        res_404 = self.client.get("/risk/state/acc-unknown")
+        self.assertEqual(res_404.status_code, 404)
+
+        res_stat = self.client.get("/risk/status/acc-test")
+        self.assertEqual(res_stat.status_code, 200)
+        self.assertIn("meta", res_stat.json())
+
+        res_stat_404 = self.client.get("/risk/status/acc-unknown")
+        self.assertEqual(res_stat_404.status_code, 404)
+
+    def test_evaluate_and_query_decisions(self) -> None:
+        res = self.client.post("/risk/evaluate", json={"account_id": "acc-test"})
+        self.assertEqual(res.status_code, 200)
+        data = res.json()["data"]
+        intent_id = data["intent_id"]
+        seq_no = data["sequence_no"]
+
+        # List decisions
+        res_list = self.client.get(f"/risk/decisions?intent_id={intent_id}")
+        self.assertEqual(res_list.status_code, 200)
+
+        # Get single decision
+        res_single = self.client.get(f"/risk/decisions/{intent_id}/{seq_no}")
+        self.assertEqual(res_single.status_code, 200)
+        self.assertEqual(res_single.json()["data"]["intent_id"], intent_id)
+
+    def test_kill_switch_endpoints(self) -> None:
+        res = self.client.post("/risk/kill-switch", json={"reason": "emergency"})
+        self.assertEqual(res.status_code, 200)
+        self.assertTrue(res.json()["meta"]["engaged"])
+
+        res_clear = self.client.delete("/risk/kill-switch")
+        self.assertEqual(res_clear.status_code, 200)
+        self.assertFalse(res_clear.json()["meta"]["engaged"])
 
 
 if __name__ == "__main__":
