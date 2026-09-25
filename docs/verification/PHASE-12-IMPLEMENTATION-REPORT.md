@@ -25,7 +25,8 @@ frontend/tests/                 18 test files, 204 tests, runnable with no packa
 tools/export_api_contract.py    generates the contract from oipulse/api/*.py
 tools/check_frontend_contract.py   guard: no screen ahead of its backend
 tools/check_terminal_boundary.py   guard: the terminal stays a presentation layer
-tests/phase12/                  53 tests, of which 23 are guard mutation tests
+tools/check_terminal_imports.py    guard: every import and export resolves
+tests/phase12/                  65 tests, of which 32 are guard mutation tests
 ```
 
 The architecture is deliberate and is what makes the phase verifiable in this
@@ -302,9 +303,9 @@ Baseline measured at `origin/main` **before any edit**: 1392 tests, 0 failures, 
 
 | Check | Command | Result |
 |---|---|---|
-| Python suite | `python3 -m unittest discover -s tests -t .` | **Ran 1445** · 0 failures · 55 errors · 44 skipped |
+| Python suite | `python3 -m unittest discover -s tests -t .` | **Ran 1457** · 0 failures · 55 errors · 44 skipped |
 | Terminal suite | `npm test` (`node --test`, no packages) | **204 tests, 204 pass, 0 fail** |
-| Guards | each `tools/check_*.py` | **15/15 PASS** |
+| Guards | each `tools/check_*.py` | **16/16 PASS** |
 | Contract currency | `python3 tools/export_api_contract.py --check` | PASS — 82 routes, 77 models, 35 serializers |
 | Lint | `ruff check .` | All checks passed |
 | Format | `ruff format --check .` | 333 files already formatted |
@@ -312,15 +313,16 @@ Baseline measured at `origin/main` **before any edit**: 1392 tests, 0 failures, 
 
 Errors are 45 × `No module named 'fastapi'` and 10 × `No module named 'google'` —
 **identical in count and kind to the baseline**, with no error of any other type. The
-1392 → 1445 delta is exactly the 53 tests in `tests/phase12`; no pre-existing test was
+1392 → 1457 delta is exactly the 65 tests in `tests/phase12`; no pre-existing test was
 added to, removed, weakened or skipped.
 
 ### Mutation-tested guards
 
 Brief §30 asks for guards; the Phase 10 brief §29 warns that "safety guard PASS" is not
-"mutation-tested safety". **23 of the 53 Phase 12 tests break exactly one thing in a
-disposable copy of the tree and assert the guard names it**, and three more establish that
-both guards pass on an untouched copy — so a later failure is attributable to the mutation
+"mutation-tested safety". **32 of the 65 Phase 12 tests break exactly one thing in a
+disposable copy of the tree and assert the guard names it.** Two more add a *valid*
+construct and assert the guard stays silent, pinning false positives that were real; four
+establish that the guards pass on an untouched copy — so a later failure is attributable to the mutation
 rather than to the copying. The mutation helper raises when its anchor string is missing,
 so a test cannot silently stop mutating and pass for the wrong reason, which is a failure
 mode this project has hit before.
@@ -382,6 +384,35 @@ modules.
 
 ---
 
+### `tools/check_terminal_imports.py` — standing in for the part of `tsc` that matters most
+
+Added after the main implementation, in direct response to risk 1 below. `tsc --noEmit`
+and `next build` cannot run here, and the errors they most often catch — a mistyped path,
+a renamed export, a symbol that was never exported, a page missing its default export —
+are resolvable from source alone. This guard resolves them:
+
+- **233 local imports** resolved to real files, trying the extensions and `index` files a
+  bundler would try.
+- **487 named imports** compared against the actual export list of the module they name,
+  following `export * from` one level.
+- every default import checked against a default export, and every `page.tsx` checked for
+  one, because Next's error for a missing page default does not say which file.
+- external packages checked against `package.json`, since their files cannot be resolved
+  without `node_modules`.
+- brackets balanced, as a smoke check for a truncated file.
+
+All of it passes. Twelve mutation tests cover it, including two that assert the *absence*
+of a false positive: building the bracket check required telling a regex literal from a
+division, and the first two attempts misread JSX closing tags (`</div>`) and self-closing
+tags (`... />`) as regexes, reporting nine intact files as truncated. Both heuristics are
+now pinned by tests.
+
+**This is not a type check.** It resolves names, not types: a `string` passed where a
+`number` is required passes here and fails in `tsc`. It makes a build failure less likely;
+it does not make one impossible.
+
+---
+
 ## 13. Known limitations
 
 1. **No type check, no build, no component render.** The three checks that would most
@@ -415,20 +446,24 @@ modules.
    `tests/phase11/test_attribution_and_reconciliation.py` had a trailing blank line that
    `ruff format --check` rejects. It is unrelated to Phase 12 and was committed on its own
    so the phase commit stays clean.
-10. **Guards are lexical, not type-aware.** They strip comments and strings before matching,
-    so they read code rather than prose, but a check here proves a token is absent — not
-    that a behaviour is impossible. `tsc` and `eslint` remain authoritative and run in CI.
+10. **Guards are lexical, not type-aware.** They strip comments, strings and regex
+    literals before matching, so they read code rather than prose, but a check here proves
+    a token is absent or a name resolves — not that a behaviour is impossible and not that
+    a type is right. `tsc` and `eslint` remain authoritative and run in CI.
 
 ---
 
 ## 14. Remaining risks
 
-1. **The build may fail on first CI run.** Nothing here has been compiled. The likeliest
-   causes are a TypeScript type error in a `.tsx` file and a Next.js server/client
-   boundary issue. Mitigations applied: the segment is `force-dynamic` because every screen
-   reads `useSearchParams`; a guard checks that every file using a hook or an event handler
-   declares `"use client"`; the route group bug was found and fixed. None of that is a
-   substitute for running the build.
+1. **The build may fail on first CI run.** Nothing here has been compiled. Mitigations
+   applied, in descending order of what they rule out: `check_terminal_imports.py` resolves
+   all 233 local imports and all 487 named imports, so no unresolved path or renamed export
+   remains; the route-group bug was found and fixed; the segment is `force-dynamic` because
+   every screen reads `useSearchParams`; a guard checks that every file using a hook or an
+   event handler declares `"use client"`; every page is confirmed to have a default export.
+   What remains unruled-out is a **TypeScript type error** — a wrong type on a field or a
+   prop that resolves fine and does not check. That is the likeliest first failure, and
+   nothing available here can find it.
 2. **Payload field *types* are hand-written.** Names are checked; a `string` that is
    actually a `number` would pass every check in this phase and surface at runtime.
 3. **The terminal is only as honest as the envelopes it receives.** Quality, mode and
