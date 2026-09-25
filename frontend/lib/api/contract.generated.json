@@ -1,0 +1,2525 @@
+{
+  "contract_version": 1,
+  "generator": "tools/export_api_contract.py",
+  "source_digest": "edbc9126a61c44dfe3e20838368f6c2826b264e2e148dc6ea3dfa9875388b099",
+  "routes": [
+    {
+      "method": "GET",
+      "path": "/alerts/occurrences",
+      "operation": "list_occurrences",
+      "module": "oipulse/api/alerts.py",
+      "meta_keys": [
+        "count"
+      ],
+      "meta_partial": false
+    },
+    {
+      "method": "POST",
+      "path": "/alerts/occurrences/{occurrence_id}/acknowledge",
+      "operation": "acknowledge",
+      "module": "oipulse/api/alerts.py",
+      "meta_keys": [
+        "signal_unchanged"
+      ],
+      "meta_partial": false
+    },
+    {
+      "method": "GET",
+      "path": "/alerts/rules",
+      "operation": "list_rules",
+      "module": "oipulse/api/alerts.py",
+      "meta_keys": [
+        "count"
+      ],
+      "meta_partial": false
+    },
+    {
+      "method": "POST",
+      "path": "/alerts/rules",
+      "operation": "create_rule",
+      "module": "oipulse/api/alerts.py",
+      "meta_keys": [],
+      "meta_partial": true
+    },
+    {
+      "method": "DELETE",
+      "path": "/alerts/rules/{rule_id}",
+      "operation": "delete_rule",
+      "module": "oipulse/api/alerts.py",
+      "meta_keys": [],
+      "meta_partial": true
+    },
+    {
+      "method": "GET",
+      "path": "/alerts/rules/{rule_id}",
+      "operation": "get_rule",
+      "module": "oipulse/api/alerts.py",
+      "meta_keys": [],
+      "meta_partial": true
+    },
+    {
+      "method": "POST",
+      "path": "/alerts/rules/{rule_id}/test",
+      "operation": "test_rule",
+      "module": "oipulse/api/alerts.py",
+      "meta_keys": [
+        "delivered",
+        "dry_run",
+        "persisted"
+      ],
+      "meta_partial": false
+    },
+    {
+      "method": "GET",
+      "path": "/backtest/results/{content_hash}",
+      "operation": "get_result_by_hash",
+      "module": "oipulse/api/backtest.py",
+      "meta_keys": [],
+      "meta_partial": true
+    },
+    {
+      "method": "GET",
+      "path": "/backtest/runs",
+      "operation": "list_runs",
+      "module": "oipulse/api/backtest.py",
+      "meta_keys": [
+        "count"
+      ],
+      "meta_partial": false
+    },
+    {
+      "method": "POST",
+      "path": "/backtest/runs",
+      "operation": "create_run",
+      "module": "oipulse/api/backtest.py",
+      "meta_keys": [
+        "assumptions"
+      ],
+      "meta_partial": false
+    },
+    {
+      "method": "GET",
+      "path": "/backtest/runs/{run_id}",
+      "operation": "get_run",
+      "module": "oipulse/api/backtest.py",
+      "meta_keys": [
+        "assumptions"
+      ],
+      "meta_partial": false
+    },
+    {
+      "method": "GET",
+      "path": "/backtest/runs/{run_id}/equity-curve",
+      "operation": "get_equity_curve",
+      "module": "oipulse/api/backtest.py",
+      "meta_keys": [],
+      "meta_partial": true
+    },
+    {
+      "method": "GET",
+      "path": "/backtest/runs/{run_id}/results",
+      "operation": "get_run_results",
+      "module": "oipulse/api/backtest.py",
+      "meta_keys": [],
+      "meta_partial": true
+    },
+    {
+      "method": "GET",
+      "path": "/backtest/runs/{run_id}/trades",
+      "operation": "get_run_trades",
+      "module": "oipulse/api/backtest.py",
+      "meta_keys": [],
+      "meta_partial": true
+    },
+    {
+      "method": "GET",
+      "path": "/features",
+      "operation": "list_features",
+      "module": "oipulse/api/features.py",
+      "meta_keys": [
+        "count",
+        "identifiers",
+        "scopes"
+      ],
+      "meta_partial": false
+    },
+    {
+      "method": "GET",
+      "path": "/features/{identifier}/values",
+      "operation": "feature_values",
+      "module": "oipulse/api/features.py",
+      "meta_keys": [
+        "decision_time",
+        "feature",
+        "knowledge_time",
+        "market_time",
+        "semantics"
+      ],
+      "meta_partial": false
+    },
+    {
+      "method": "GET",
+      "path": "/features/{identifier}/versions/{version}",
+      "operation": "feature_definition",
+      "module": "oipulse/api/features.py",
+      "meta_keys": [
+        "available_versions"
+      ],
+      "meta_partial": false
+    },
+    {
+      "method": "GET",
+      "path": "/market/state",
+      "operation": "market_state",
+      "module": "oipulse/api/market_state.py",
+      "meta_keys": [],
+      "meta_partial": true
+    },
+    {
+      "method": "GET",
+      "path": "/ops/health",
+      "operation": "health",
+      "module": "oipulse/api/health.py",
+      "meta_keys": [],
+      "meta_partial": true
+    },
+    {
+      "method": "GET",
+      "path": "/ops/ready",
+      "operation": "ready",
+      "module": "oipulse/api/health.py",
+      "meta_keys": [],
+      "meta_partial": true
+    },
+    {
+      "method": "GET",
+      "path": "/paper-trading/accounts",
+      "operation": "list_accounts",
+      "module": "oipulse/api/paper_trading.py",
+      "meta_keys": [
+        "count",
+        "live_execution_available",
+        "mode"
+      ],
+      "meta_partial": false
+    },
+    {
+      "method": "POST",
+      "path": "/paper-trading/accounts",
+      "operation": "create_account",
+      "module": "oipulse/api/paper_trading.py",
+      "meta_keys": [],
+      "meta_partial": true
+    },
+    {
+      "method": "GET",
+      "path": "/paper-trading/accounts/{account_id}",
+      "operation": "get_account",
+      "module": "oipulse/api/paper_trading.py",
+      "meta_keys": [],
+      "meta_partial": true
+    },
+    {
+      "method": "GET",
+      "path": "/paper-trading/accounts/{account_id}/audit/{order_id}",
+      "operation": "get_audit_chain",
+      "module": "oipulse/api/paper_trading.py",
+      "meta_keys": [],
+      "meta_partial": true
+    },
+    {
+      "method": "GET",
+      "path": "/paper-trading/accounts/{account_id}/fills",
+      "operation": "list_fills",
+      "module": "oipulse/api/paper_trading.py",
+      "meta_keys": [],
+      "meta_partial": true
+    },
+    {
+      "method": "POST",
+      "path": "/paper-trading/accounts/{account_id}/intents",
+      "operation": "create_intent",
+      "module": "oipulse/api/paper_trading.py",
+      "meta_keys": [],
+      "meta_partial": true
+    },
+    {
+      "method": "GET",
+      "path": "/paper-trading/accounts/{account_id}/intents/{intent_id}",
+      "operation": "get_intent",
+      "module": "oipulse/api/paper_trading.py",
+      "meta_keys": [],
+      "meta_partial": true
+    },
+    {
+      "method": "GET",
+      "path": "/paper-trading/accounts/{account_id}/orders",
+      "operation": "list_orders",
+      "module": "oipulse/api/paper_trading.py",
+      "meta_keys": [],
+      "meta_partial": true
+    },
+    {
+      "method": "GET",
+      "path": "/paper-trading/accounts/{account_id}/orders/{order_id}",
+      "operation": "get_order",
+      "module": "oipulse/api/paper_trading.py",
+      "meta_keys": [],
+      "meta_partial": true
+    },
+    {
+      "method": "POST",
+      "path": "/paper-trading/accounts/{account_id}/orders/{order_id}/cancel",
+      "operation": "cancel_order",
+      "module": "oipulse/api/paper_trading.py",
+      "meta_keys": [],
+      "meta_partial": true
+    },
+    {
+      "method": "GET",
+      "path": "/paper-trading/accounts/{account_id}/orders/{order_id}/events",
+      "operation": "get_order_events",
+      "module": "oipulse/api/paper_trading.py",
+      "meta_keys": [
+        "count",
+        "live_execution_available",
+        "mode",
+        "order_id"
+      ],
+      "meta_partial": false
+    },
+    {
+      "method": "GET",
+      "path": "/paper-trading/accounts/{account_id}/pnl",
+      "operation": "get_pnl",
+      "module": "oipulse/api/paper_trading.py",
+      "meta_keys": [],
+      "meta_partial": true
+    },
+    {
+      "method": "GET",
+      "path": "/paper-trading/accounts/{account_id}/positions",
+      "operation": "list_positions",
+      "module": "oipulse/api/paper_trading.py",
+      "meta_keys": [],
+      "meta_partial": true
+    },
+    {
+      "method": "GET",
+      "path": "/portfolio",
+      "operation": "get_portfolio",
+      "module": "oipulse/api/portfolio.py",
+      "meta_keys": [],
+      "meta_partial": true
+    },
+    {
+      "method": "GET",
+      "path": "/portfolio/attribution",
+      "operation": "get_attribution",
+      "module": "oipulse/api/portfolio.py",
+      "meta_keys": [],
+      "meta_partial": true
+    },
+    {
+      "method": "GET",
+      "path": "/portfolio/exposure",
+      "operation": "get_exposure",
+      "module": "oipulse/api/portfolio.py",
+      "meta_keys": [],
+      "meta_partial": true
+    },
+    {
+      "method": "GET",
+      "path": "/portfolio/greeks",
+      "operation": "get_greeks",
+      "module": "oipulse/api/portfolio.py",
+      "meta_keys": [],
+      "meta_partial": true
+    },
+    {
+      "method": "GET",
+      "path": "/portfolio/pnl",
+      "operation": "get_pnl",
+      "module": "oipulse/api/portfolio.py",
+      "meta_keys": [],
+      "meta_partial": true
+    },
+    {
+      "method": "POST",
+      "path": "/portfolio/position-reconciliation",
+      "operation": "reconcile_positions",
+      "module": "oipulse/api/portfolio.py",
+      "meta_keys": [],
+      "meta_partial": true
+    },
+    {
+      "method": "GET",
+      "path": "/portfolio/position-reconciliation/{run_id}",
+      "operation": "get_position_reconciliation",
+      "module": "oipulse/api/portfolio.py",
+      "meta_keys": [],
+      "meta_partial": true
+    },
+    {
+      "method": "GET",
+      "path": "/portfolio/positions",
+      "operation": "get_positions",
+      "module": "oipulse/api/portfolio.py",
+      "meta_keys": [],
+      "meta_partial": true
+    },
+    {
+      "method": "GET",
+      "path": "/portfolio/snapshots",
+      "operation": "list_snapshots",
+      "module": "oipulse/api/portfolio.py",
+      "meta_keys": [
+        "complete",
+        "count"
+      ],
+      "meta_partial": false
+    },
+    {
+      "method": "GET",
+      "path": "/portfolio/snapshots/{content_digest}",
+      "operation": "get_snapshot",
+      "module": "oipulse/api/portfolio.py",
+      "meta_keys": [],
+      "meta_partial": true
+    },
+    {
+      "method": "GET",
+      "path": "/reconciliation/orders",
+      "operation": "list_orders",
+      "module": "oipulse/api/reconciliation.py",
+      "meta_keys": [],
+      "meta_partial": true
+    },
+    {
+      "method": "GET",
+      "path": "/reconciliation/orders/{order_id}",
+      "operation": "get_order",
+      "module": "oipulse/api/reconciliation.py",
+      "meta_keys": [],
+      "meta_partial": true
+    },
+    {
+      "method": "POST",
+      "path": "/reconciliation/orders/{order_id}/cancel",
+      "operation": "cancel_order",
+      "module": "oipulse/api/reconciliation.py",
+      "meta_keys": [],
+      "meta_partial": true
+    },
+    {
+      "method": "GET",
+      "path": "/reconciliation/orders/{order_id}/events",
+      "operation": "get_order_events",
+      "module": "oipulse/api/reconciliation.py",
+      "meta_keys": [
+        "count",
+        "execution_mode",
+        "live_execution_enabled",
+        "order_id"
+      ],
+      "meta_partial": false
+    },
+    {
+      "method": "GET",
+      "path": "/reconciliation/orders/{order_id}/provider-state",
+      "operation": "get_provider_state",
+      "module": "oipulse/api/reconciliation.py",
+      "meta_keys": [
+        "execution_mode",
+        "live_execution_enabled",
+        "order_id",
+        "present_at_provider"
+      ],
+      "meta_partial": false
+    },
+    {
+      "method": "GET",
+      "path": "/reconciliation/runs",
+      "operation": "list_runs",
+      "module": "oipulse/api/reconciliation.py",
+      "meta_keys": [],
+      "meta_partial": true
+    },
+    {
+      "method": "GET",
+      "path": "/reconciliation/runs/{run_id}",
+      "operation": "get_run",
+      "module": "oipulse/api/reconciliation.py",
+      "meta_keys": [],
+      "meta_partial": true
+    },
+    {
+      "method": "GET",
+      "path": "/reconciliation/status",
+      "operation": "get_status",
+      "module": "oipulse/api/reconciliation.py",
+      "meta_keys": [
+        "execution_mode",
+        "live_execution_enabled"
+      ],
+      "meta_partial": false
+    },
+    {
+      "method": "POST",
+      "path": "/reconciliation/trigger",
+      "operation": "trigger_reconciliation",
+      "module": "oipulse/api/reconciliation.py",
+      "meta_keys": [],
+      "meta_partial": true
+    },
+    {
+      "method": "GET",
+      "path": "/replay/sessions",
+      "operation": "list_sessions",
+      "module": "oipulse/api/replay.py",
+      "meta_keys": [
+        "count"
+      ],
+      "meta_partial": false
+    },
+    {
+      "method": "POST",
+      "path": "/replay/sessions",
+      "operation": "create_session",
+      "module": "oipulse/api/replay.py",
+      "meta_keys": [
+        "status"
+      ],
+      "meta_partial": false
+    },
+    {
+      "method": "GET",
+      "path": "/replay/sessions/{session_id}",
+      "operation": "get_session",
+      "module": "oipulse/api/replay.py",
+      "meta_keys": [
+        "current_step",
+        "progress",
+        "status"
+      ],
+      "meta_partial": false
+    },
+    {
+      "method": "POST",
+      "path": "/replay/sessions/{session_id}/control",
+      "operation": "control_session",
+      "module": "oipulse/api/replay.py",
+      "meta_keys": [
+        "current_step",
+        "progress"
+      ],
+      "meta_partial": false
+    },
+    {
+      "method": "GET",
+      "path": "/replay/sessions/{session_id}/state",
+      "operation": "get_session_state",
+      "module": "oipulse/api/replay.py",
+      "meta_keys": [
+        "build_context_id",
+        "is_hindsight",
+        "run_id"
+      ],
+      "meta_partial": false
+    },
+    {
+      "method": "GET",
+      "path": "/research/datasets",
+      "operation": "list_datasets",
+      "module": "oipulse/api/research.py",
+      "meta_keys": [
+        "count"
+      ],
+      "meta_partial": false
+    },
+    {
+      "method": "GET",
+      "path": "/research/datasets/{content_hash}",
+      "operation": "get_dataset",
+      "module": "oipulse/api/research.py",
+      "meta_keys": [],
+      "meta_partial": true
+    },
+    {
+      "method": "GET",
+      "path": "/research/results",
+      "operation": "list_results",
+      "module": "oipulse/api/research.py",
+      "meta_keys": [
+        "count"
+      ],
+      "meta_partial": false
+    },
+    {
+      "method": "GET",
+      "path": "/research/results/{content_hash}",
+      "operation": "get_result",
+      "module": "oipulse/api/research.py",
+      "meta_keys": [],
+      "meta_partial": true
+    },
+    {
+      "method": "GET",
+      "path": "/research/signal-evaluations",
+      "operation": "list_signal_evaluations",
+      "module": "oipulse/api/research.py",
+      "meta_keys": [
+        "count",
+        "reportable"
+      ],
+      "meta_partial": false
+    },
+    {
+      "method": "GET",
+      "path": "/research/studies",
+      "operation": "list_studies",
+      "module": "oipulse/api/research.py",
+      "meta_keys": [
+        "count"
+      ],
+      "meta_partial": false
+    },
+    {
+      "method": "POST",
+      "path": "/research/studies",
+      "operation": "create_study",
+      "module": "oipulse/api/research.py",
+      "meta_keys": [],
+      "meta_partial": true
+    },
+    {
+      "method": "POST",
+      "path": "/research/studies/{study_id}/run",
+      "operation": "run_study",
+      "module": "oipulse/api/research.py",
+      "meta_keys": [],
+      "meta_partial": true
+    },
+    {
+      "method": "DELETE",
+      "path": "/research/studies/{study_id}/versions/{version}",
+      "operation": "delete_study",
+      "module": "oipulse/api/research.py",
+      "meta_keys": [],
+      "meta_partial": true
+    },
+    {
+      "method": "GET",
+      "path": "/research/studies/{study_id}/versions/{version}",
+      "operation": "get_study",
+      "module": "oipulse/api/research.py",
+      "meta_keys": [],
+      "meta_partial": true
+    },
+    {
+      "method": "GET",
+      "path": "/risk/decisions",
+      "operation": "list_decisions",
+      "module": "oipulse/api/risk.py",
+      "meta_keys": [],
+      "meta_partial": true
+    },
+    {
+      "method": "GET",
+      "path": "/risk/decisions/{intent_id}/{sequence_no}",
+      "operation": "get_decision",
+      "module": "oipulse/api/risk.py",
+      "meta_keys": [],
+      "meta_partial": true
+    },
+    {
+      "method": "POST",
+      "path": "/risk/evaluate",
+      "operation": "evaluate_intent",
+      "module": "oipulse/api/risk.py",
+      "meta_keys": [],
+      "meta_partial": true
+    },
+    {
+      "method": "DELETE",
+      "path": "/risk/kill-switch",
+      "operation": "clear_kill_switch",
+      "module": "oipulse/api/risk.py",
+      "meta_keys": [
+        "engaged"
+      ],
+      "meta_partial": false
+    },
+    {
+      "method": "POST",
+      "path": "/risk/kill-switch",
+      "operation": "engage_kill_switch",
+      "module": "oipulse/api/risk.py",
+      "meta_keys": [
+        "engaged"
+      ],
+      "meta_partial": false
+    },
+    {
+      "method": "GET",
+      "path": "/risk/profiles",
+      "operation": "list_profiles",
+      "module": "oipulse/api/risk.py",
+      "meta_keys": [
+        "count"
+      ],
+      "meta_partial": false
+    },
+    {
+      "method": "PUT",
+      "path": "/risk/profiles",
+      "operation": "put_profile",
+      "module": "oipulse/api/risk.py",
+      "meta_keys": [],
+      "meta_partial": true
+    },
+    {
+      "method": "GET",
+      "path": "/risk/profiles/{policy_id}/versions/{version}",
+      "operation": "get_profile",
+      "module": "oipulse/api/risk.py",
+      "meta_keys": [],
+      "meta_partial": true
+    },
+    {
+      "method": "GET",
+      "path": "/risk/state/{account_id}",
+      "operation": "get_risk_state",
+      "module": "oipulse/api/risk.py",
+      "meta_keys": [],
+      "meta_partial": true
+    },
+    {
+      "method": "GET",
+      "path": "/risk/status/{account_id}",
+      "operation": "get_limit_status",
+      "module": "oipulse/api/risk.py",
+      "meta_keys": [],
+      "meta_partial": true
+    },
+    {
+      "method": "GET",
+      "path": "/signals",
+      "operation": "list_signals",
+      "module": "oipulse/api/signals.py",
+      "meta_keys": [
+        "count",
+        "decision_time",
+        "knowledge_time",
+        "market_time",
+        "semantics"
+      ],
+      "meta_partial": false
+    },
+    {
+      "method": "GET",
+      "path": "/signals/types",
+      "operation": "signal_types",
+      "module": "oipulse/api/signals.py",
+      "meta_keys": [
+        "count",
+        "types"
+      ],
+      "meta_partial": false
+    },
+    {
+      "method": "GET",
+      "path": "/signals/types/{signal_type}/versions/{version}",
+      "operation": "signal_type_definition",
+      "module": "oipulse/api/signals.py",
+      "meta_keys": [],
+      "meta_partial": true
+    },
+    {
+      "method": "GET",
+      "path": "/signals/{signal_id}",
+      "operation": "get_signal",
+      "module": "oipulse/api/signals.py",
+      "meta_keys": [
+        "signal_id"
+      ],
+      "meta_partial": false
+    },
+    {
+      "method": "GET",
+      "path": "/signals/{signal_id}/history",
+      "operation": "get_signal_history",
+      "module": "oipulse/api/signals.py",
+      "meta_keys": [
+        "current_status",
+        "signal_id"
+      ],
+      "meta_partial": false
+    }
+  ],
+  "models": {
+    "AttributionResult": {
+      "keys": [
+        "bucket",
+        "bucket_id",
+        "components",
+        "explained",
+        "method",
+        "method_version",
+        "reconciles",
+        "residual",
+        "residual_fraction",
+        "total_pnl",
+        "uncomputed_components"
+      ],
+      "partial": false,
+      "sources": [
+        "oipulse/trading/portfolio/attribution.py"
+      ]
+    },
+    "AttributionSlice": {
+      "keys": [
+        "attribution",
+        "bucket",
+        "bucket_id",
+        "children",
+        "is_unattributed"
+      ],
+      "partial": false,
+      "sources": [
+        "oipulse/trading/portfolio/attribution.py"
+      ]
+    },
+    "AuditChain": {
+      "keys": [
+        "answers",
+        "fills",
+        "intent",
+        "order",
+        "risk_decisions"
+      ],
+      "partial": false,
+      "sources": [
+        "oipulse/trading/audit.py"
+      ]
+    },
+    "BacktestExecutionMetadata": {
+      "keys": [
+        "duration_seconds",
+        "engine_version",
+        "executed_at",
+        "host"
+      ],
+      "partial": false,
+      "sources": [
+        "oipulse/backtest/result.py"
+      ]
+    },
+    "BacktestResult": {
+      "keys": [
+        "assumption_based",
+        "assumptions",
+        "build_context_id",
+        "caveats",
+        "content_hash",
+        "execution",
+        "fill_model_digest",
+        "fills",
+        "final_ledger",
+        "replay_digest",
+        "risk_evaluated",
+        "run_id",
+        "statistics",
+        "strategy",
+        "strategy_digest"
+      ],
+      "partial": false,
+      "sources": [
+        "oipulse/backtest/result.py"
+      ]
+    },
+    "BacktestStatistics": {
+      "keys": [
+        "assumption_based_fills",
+        "fees",
+        "fill_rate",
+        "fills",
+        "gross_pnl",
+        "intents_generated",
+        "intents_rejected_by_risk",
+        "max_drawdown",
+        "net_pnl",
+        "orders_submitted",
+        "partial_fills",
+        "realized_pnl",
+        "rejection_reasons",
+        "rejections",
+        "slippage_cost",
+        "turnover",
+        "unrealized_pnl"
+      ],
+      "partial": false,
+      "sources": [
+        "oipulse/backtest/result.py"
+      ]
+    },
+    "BrokerAck": {
+      "keys": [
+        "accepted",
+        "client_order_attempt_id",
+        "provider_order_id",
+        "provider_status",
+        "provider_time",
+        "reason",
+        "received_at"
+      ],
+      "partial": false,
+      "sources": [
+        "oipulse/trading/brokers/protocol.py"
+      ]
+    },
+    "BrokerFill": {
+      "keys": [
+        "dedup_key",
+        "fees",
+        "has_provider_identity",
+        "instrument_id",
+        "price",
+        "provider_fill_id",
+        "provider_order_id",
+        "provider_time",
+        "quantity",
+        "received_at",
+        "side"
+      ],
+      "partial": false,
+      "sources": [
+        "oipulse/trading/brokers/protocol.py"
+      ]
+    },
+    "BrokerOrderEvent": {
+      "keys": [
+        "filled_quantity",
+        "provider_order_id",
+        "provider_time",
+        "raw",
+        "received_at",
+        "status"
+      ],
+      "partial": false,
+      "sources": [
+        "oipulse/trading/brokers/protocol.py"
+      ]
+    },
+    "BrokerOrderRequest": {
+      "keys": [
+        "client_order_attempt_id",
+        "instrument_id",
+        "limit_price",
+        "order_id",
+        "order_type",
+        "quantity",
+        "requested_at",
+        "side"
+      ],
+      "partial": false,
+      "sources": [
+        "oipulse/trading/brokers/protocol.py"
+      ]
+    },
+    "BrokerOrderState": {
+      "keys": [
+        "average_price",
+        "client_order_attempt_id",
+        "filled_quantity",
+        "instrument_id",
+        "provider_order_id",
+        "provider_time",
+        "quantity",
+        "raw_status",
+        "received_at",
+        "side",
+        "status"
+      ],
+      "partial": false,
+      "sources": [
+        "oipulse/trading/brokers/protocol.py"
+      ]
+    },
+    "BrokerPosition": {
+      "keys": [
+        "average_price",
+        "instrument_id",
+        "provider_time",
+        "quantity"
+      ],
+      "partial": false,
+      "sources": [
+        "oipulse/trading/brokers/protocol.py"
+      ]
+    },
+    "ComponentAmount": {
+      "keys": [
+        "amount",
+        "component",
+        "computed",
+        "detail"
+      ],
+      "partial": false,
+      "sources": [
+        "oipulse/trading/portfolio/attribution.py"
+      ]
+    },
+    "ContractEconomics": {
+      "keys": [
+        "instrument_id",
+        "lot_size",
+        "multiplier",
+        "multiplier_source",
+        "symbol",
+        "tick_size",
+        "units_per_quantity",
+        "valid_from",
+        "valid_to"
+      ],
+      "partial": false,
+      "sources": [
+        "oipulse/trading/portfolio/economics.py"
+      ]
+    },
+    "CostBreakdown": {
+      "keys": [
+        "brokerage",
+        "exchange_charges",
+        "gst",
+        "sebi_charges",
+        "securities_transaction_tax",
+        "stamp_duty",
+        "total"
+      ],
+      "partial": false,
+      "sources": [
+        "oipulse/backtest/costs.py"
+      ]
+    },
+    "CostModel": {
+      "keys": [
+        "basis",
+        "brokerage_flat",
+        "brokerage_rate",
+        "exchange_rate",
+        "gst_rate",
+        "name",
+        "sebi_rate",
+        "stamp_duty_rate_buy",
+        "stt_rate_sell",
+        "version"
+      ],
+      "partial": false,
+      "sources": [
+        "oipulse/backtest/costs.py"
+      ]
+    },
+    "Dataset": {
+      "keys": [
+        "build_context_id",
+        "builder_version",
+        "content_hash",
+        "created_at",
+        "feature_versions",
+        "knowledge_horizon",
+        "name",
+        "period",
+        "quality_summary",
+        "query_mode",
+        "row_count",
+        "universe"
+      ],
+      "partial": false,
+      "sources": [
+        "oipulse/research/dataset.py"
+      ]
+    },
+    "Discrepancy": {
+      "keys": [
+        "detail",
+        "kind",
+        "local_state",
+        "local_value",
+        "needs_attention",
+        "order_id",
+        "provider_order_id",
+        "provider_status",
+        "provider_value",
+        "resolution"
+      ],
+      "partial": false,
+      "sources": [
+        "oipulse/trading/reconciliation/model.py"
+      ]
+    },
+    "DistributionStats": {
+      "keys": [
+        "count",
+        "histogram",
+        "max_drawdown",
+        "mean",
+        "median",
+        "profit_factor",
+        "quantiles",
+        "skew",
+        "stdev",
+        "win_rate"
+      ],
+      "partial": false,
+      "sources": [
+        "oipulse/research/statistics.py"
+      ]
+    },
+    "EventDefinition": {
+      "keys": [
+        "config",
+        "content_digest",
+        "definition",
+        "event_id",
+        "exclude_unreliable",
+        "kind",
+        "requires_features",
+        "requires_signal_types",
+        "version"
+      ],
+      "partial": false,
+      "sources": [
+        "oipulse/research/events.py"
+      ]
+    },
+    "EventStudy": {
+      "keys": [
+        "comparison_count",
+        "content_digest",
+        "controls",
+        "event_definition",
+        "feature_versions",
+        "horizons_seconds",
+        "is_hindsight",
+        "minimum_sample",
+        "period",
+        "query_mode",
+        "question",
+        "sampling",
+        "signal_versions",
+        "study_id",
+        "universe",
+        "version"
+      ],
+      "partial": false,
+      "sources": [
+        "oipulse/research/study.py"
+      ]
+    },
+    "EvidenceAttribution": {
+      "keys": [
+        "evidence_label",
+        "flagged_decorative",
+        "separation",
+        "signal_type",
+        "with_item",
+        "without_item"
+      ],
+      "partial": false,
+      "sources": [
+        "oipulse/research/signal_evaluation.py"
+      ]
+    },
+    "ExcursionStats": {
+      "keys": [
+        "mae",
+        "mfe",
+        "missing",
+        "observations",
+        "time_to_mae_seconds",
+        "time_to_mfe_seconds"
+      ],
+      "partial": false,
+      "sources": [
+        "oipulse/research/statistics.py"
+      ]
+    },
+    "ExecutionMetadata": {
+      "keys": [
+        "duration_seconds",
+        "engine_version",
+        "executed_at",
+        "host"
+      ],
+      "partial": false,
+      "sources": [
+        "oipulse/research/result.py"
+      ]
+    },
+    "ExecutionOutcome": {
+      "keys": [
+        "detail",
+        "fill",
+        "order",
+        "reject_reason"
+      ],
+      "partial": false,
+      "sources": [
+        "oipulse/trading/execution.py"
+      ]
+    },
+    "ExposureSnapshot": {
+      "keys": [
+        "by_expiry",
+        "by_strike",
+        "by_underlying",
+        "gross_delta",
+        "gross_gamma",
+        "gross_notional",
+        "gross_theta",
+        "gross_vega",
+        "net_delta",
+        "net_notional"
+      ],
+      "partial": false,
+      "sources": [
+        "oipulse/trading/risk/state.py"
+      ]
+    },
+    "FeatureSpec": {
+      "keys": [
+        "availability_delay",
+        "definition",
+        "depends_on",
+        "formula",
+        "identifier",
+        "implementation_ref",
+        "inputs",
+        "lookback",
+        "normalization",
+        "parameters",
+        "quality_requirements",
+        "sampling_frequency",
+        "scope",
+        "units",
+        "version"
+      ],
+      "partial": false,
+      "sources": [
+        "oipulse/analytics/registry.py"
+      ]
+    },
+    "Fill": {
+      "keys": [
+        "assumption_based",
+        "costs",
+        "filled_at",
+        "instrument_id",
+        "intent_id",
+        "is_partial",
+        "price",
+        "price_source",
+        "quantity",
+        "reference_price",
+        "requested_quantity",
+        "side",
+        "slippage_model",
+        "slippage_per_unit"
+      ],
+      "partial": false,
+      "sources": [
+        "oipulse/backtest/fills.py"
+      ]
+    },
+    "FillOutcome": {
+      "keys": [
+        "detail",
+        "fill",
+        "filled",
+        "intent_id",
+        "rejection"
+      ],
+      "partial": false,
+      "sources": [
+        "oipulse/backtest/fills.py"
+      ]
+    },
+    "GreekInputs": {
+      "keys": [
+        "delta",
+        "gamma",
+        "implied_vol_move",
+        "theta",
+        "time_elapsed_days",
+        "underlying_move",
+        "vega"
+      ],
+      "partial": false,
+      "sources": [
+        "oipulse/trading/portfolio/attribution.py"
+      ]
+    },
+    "HorizonResult": {
+      "keys": [
+        "breakdowns",
+        "distribution",
+        "excursion",
+        "horizon_seconds",
+        "incomplete_windows"
+      ],
+      "partial": false,
+      "sources": [
+        "oipulse/research/result.py"
+      ]
+    },
+    "IntentConstraints": {
+      "keys": [
+        "all_or_none",
+        "max_slippage",
+        "valid_until"
+      ],
+      "partial": false,
+      "sources": [
+        "oipulse/trading/intents.py"
+      ]
+    },
+    "IntentLeg": {
+      "keys": [
+        "instrument_id",
+        "limit_price",
+        "order_type",
+        "quantity",
+        "side"
+      ],
+      "partial": false,
+      "sources": [
+        "oipulse/trading/intents.py"
+      ]
+    },
+    "KillSwitchState": {
+      "keys": [
+        "engaged",
+        "engaged_at",
+        "halted_strategies",
+        "reason"
+      ],
+      "partial": false,
+      "sources": [
+        "oipulse/trading/risk/state.py"
+      ]
+    },
+    "LedgerSnapshot": {
+      "keys": [
+        "as_of",
+        "cash",
+        "fees",
+        "fills_applied",
+        "gross_pnl",
+        "net_pnl",
+        "positions",
+        "realized_pnl",
+        "slippage_cost",
+        "unmarked_instruments",
+        "unrealized_pnl"
+      ],
+      "partial": false,
+      "sources": [
+        "oipulse/backtest/ledger.py"
+      ]
+    },
+    "LimitEvaluation": {
+      "keys": [
+        "category",
+        "detail",
+        "headroom",
+        "limit_id",
+        "limit_value",
+        "observed_value",
+        "status"
+      ],
+      "partial": false,
+      "sources": [
+        "oipulse/trading/risk/decision.py"
+      ]
+    },
+    "OrderEvent": {
+      "keys": [
+        "from_state",
+        "occurred_at",
+        "order_id",
+        "payload",
+        "sequence",
+        "to_state",
+        "trigger"
+      ],
+      "partial": false,
+      "sources": [
+        "oipulse/trading/orders.py"
+      ]
+    },
+    "PaperAccount": {
+      "keys": [
+        "account_id",
+        "closed_at",
+        "config",
+        "config_digest",
+        "label",
+        "mode",
+        "opened_at",
+        "owner",
+        "status"
+      ],
+      "partial": false,
+      "sources": [
+        "oipulse/trading/accounts.py"
+      ]
+    },
+    "PaperAccountConfig": {
+      "keys": [
+        "cost_model",
+        "currency",
+        "fill_model",
+        "max_order_notional",
+        "max_order_quantity",
+        "reserve_cash_on_open_orders",
+        "starting_cash"
+      ],
+      "partial": false,
+      "sources": [
+        "oipulse/trading/accounts.py"
+      ]
+    },
+    "PaperOrder": {
+      "keys": [
+        "account_id",
+        "authorizing_decision_sequence",
+        "authorizing_risk_decision_id",
+        "average_fill_price",
+        "build_context_id",
+        "client_order_attempt_id",
+        "config_digest",
+        "created_at",
+        "decision_time",
+        "events",
+        "filled_quantity",
+        "instrument_id",
+        "intent_id",
+        "is_terminal",
+        "is_unresolved",
+        "knowledge_time",
+        "limit_price",
+        "mode",
+        "order_id",
+        "order_type",
+        "provider_event_time",
+        "provider_order_id",
+        "provider_status",
+        "quantity",
+        "received_at",
+        "reject_detail",
+        "reject_reason",
+        "remaining_quantity",
+        "side",
+        "signal_id",
+        "signal_version",
+        "state",
+        "state_checkpoint_ref",
+        "strategy_id",
+        "strategy_version",
+        "venue"
+      ],
+      "partial": false,
+      "sources": [
+        "oipulse/trading/orders.py"
+      ]
+    },
+    "PaperVenueFaults": {
+      "keys": [
+        "drop_request_for",
+        "hide_from_queries",
+        "lose_ack_for",
+        "reject_for",
+        "venue_cancelled"
+      ],
+      "partial": false,
+      "sources": [
+        "oipulse/trading/brokers/paper.py"
+      ]
+    },
+    "PortfolioGreeks": {
+      "keys": [
+        "delta",
+        "gamma",
+        "is_complete",
+        "positions_included",
+        "positions_total",
+        "theta",
+        "vega"
+      ],
+      "partial": false,
+      "sources": [
+        "oipulse/trading/portfolio/snapshot.py"
+      ]
+    },
+    "PortfolioPosition": {
+      "keys": [
+        "average_price",
+        "cost_basis",
+        "cost_basis_method",
+        "economics",
+        "expiry_id",
+        "fees",
+        "fills_applied",
+        "last_fill_at",
+        "last_fill_key",
+        "opened_at",
+        "quantity",
+        "realized_pnl",
+        "status",
+        "underlying_id"
+      ],
+      "partial": true,
+      "sources": [
+        "oipulse/trading/portfolio/positions.py"
+      ]
+    },
+    "PortfolioSnapshot": {
+      "keys": [
+        "account_id",
+        "build_context_id",
+        "cash",
+        "concentration",
+        "drawdown",
+        "equity",
+        "fees",
+        "greeks",
+        "gross_exposure",
+        "is_complete",
+        "knowledge_time",
+        "margin_basis",
+        "margin_utilisation",
+        "market_time",
+        "market_value",
+        "net_exposure",
+        "peak_equity",
+        "portfolio_id",
+        "realized_pnl",
+        "returns",
+        "unrealized_pnl",
+        "unvalued_instruments",
+        "valuation"
+      ],
+      "partial": false,
+      "sources": [
+        "oipulse/trading/portfolio/snapshot.py"
+      ]
+    },
+    "Position": {
+      "keys": [
+        "average_price",
+        "instrument_id",
+        "quantity"
+      ],
+      "partial": false,
+      "sources": [
+        "oipulse/backtest/ledger.py"
+      ]
+    },
+    "PositionDiscrepancy": {
+      "keys": [
+        "detail",
+        "instrument_id",
+        "kind",
+        "local_quantity",
+        "needs_attention",
+        "position_id",
+        "provider_average_price",
+        "provider_quantity",
+        "resolution"
+      ],
+      "partial": false,
+      "sources": [
+        "oipulse/trading/portfolio/reconciliation.py"
+      ]
+    },
+    "PositionKey": {
+      "keys": [
+        "account_id",
+        "instrument_id",
+        "portfolio_id",
+        "position_id"
+      ],
+      "partial": false,
+      "sources": [
+        "oipulse/trading/portfolio/positions.py"
+      ]
+    },
+    "PositionReconciliationRun": {
+      "keys": [
+        "account_id",
+        "as_of",
+        "completed_at",
+        "content_digest",
+        "corrections_applied",
+        "discrepancies",
+        "is_clean",
+        "local_snapshot",
+        "matched",
+        "mismatched",
+        "needs_attention",
+        "portfolio_id",
+        "provider_snapshot",
+        "run_id",
+        "started_at"
+      ],
+      "partial": false,
+      "sources": [
+        "oipulse/trading/portfolio/reconciliation.py"
+      ]
+    },
+    "PositionSnapshot": {
+      "keys": [
+        "average_price",
+        "expiry_id",
+        "instrument_id",
+        "mark",
+        "quantity",
+        "strike",
+        "underlying_id"
+      ],
+      "partial": false,
+      "sources": [
+        "oipulse/trading/risk/state.py"
+      ]
+    },
+    "PositionValuation": {
+      "keys": [
+        "is_valued",
+        "mark",
+        "mark_observed_at",
+        "mark_source",
+        "market_value",
+        "position",
+        "unrealized_pnl",
+        "unvalued_reason"
+      ],
+      "partial": false,
+      "sources": [
+        "oipulse/trading/portfolio/valuation.py"
+      ]
+    },
+    "QualitySummary": {
+      "keys": [
+        "degraded_rows",
+        "missing_values",
+        "total_rows",
+        "unreliable_rows",
+        "usable_rows"
+      ],
+      "partial": false,
+      "sources": [
+        "oipulse/research/dataset.py"
+      ]
+    },
+    "ReconciliationOutcome": {
+      "keys": [
+        "discrepancies",
+        "fills_inserted",
+        "is_clean",
+        "matched",
+        "needs_attention",
+        "orders_updated",
+        "resolved",
+        "unresolved_orders"
+      ],
+      "partial": false,
+      "sources": [
+        "oipulse/trading/reconciliation/model.py"
+      ]
+    },
+    "ReconciliationRun": {
+      "keys": [
+        "as_of",
+        "completed_at",
+        "content_digest",
+        "discrepancies",
+        "local_snapshot",
+        "outcome",
+        "provider_snapshot",
+        "run_id",
+        "scope",
+        "started_at",
+        "trigger"
+      ],
+      "partial": false,
+      "sources": [
+        "oipulse/trading/reconciliation/model.py"
+      ]
+    },
+    "ReplayContext": {
+      "keys": [
+        "build_context_id",
+        "content_digest",
+        "expiry_ids",
+        "feature_versions",
+        "interval_seconds",
+        "is_hindsight",
+        "knowledge_mode",
+        "period",
+        "pinned_knowledge_horizon",
+        "rule_versions",
+        "run_id",
+        "speed",
+        "step_mode",
+        "underlying_ids"
+      ],
+      "partial": false,
+      "sources": [
+        "oipulse/replay/context.py"
+      ]
+    },
+    "ReplayProgress": {
+      "keys": [
+        "checkpoint_hits",
+        "checkpoint_misses",
+        "observations_visible",
+        "states_built",
+        "steps_completed"
+      ],
+      "partial": false,
+      "sources": [
+        "oipulse/replay/engine.py"
+      ]
+    },
+    "ReturnInputs": {
+      "keys": [
+        "ending_equity",
+        "fees",
+        "gross_pnl",
+        "net_cash_flows",
+        "net_pnl",
+        "realized_pnl",
+        "return_methodology",
+        "simple_period_return",
+        "starting_capital",
+        "unrealized_pnl"
+      ],
+      "partial": false,
+      "sources": [
+        "oipulse/trading/portfolio/snapshot.py"
+      ]
+    },
+    "RiskDecisionRecord": {
+      "keys": [
+        "approved_legs",
+        "approved_quantity",
+        "approved_until",
+        "breaches",
+        "decision_digest",
+        "evaluated",
+        "inputs_digest",
+        "intent_id",
+        "knowledge_horizon",
+        "limits_evaluated",
+        "policy_digest",
+        "policy_id",
+        "policy_version",
+        "reason",
+        "requested_quantity",
+        "risk_decision_id",
+        "risk_evaluation_time",
+        "risk_state_ref",
+        "sequence_no",
+        "verdict"
+      ],
+      "partial": false,
+      "sources": [
+        "oipulse/trading/risk/decision.py"
+      ]
+    },
+    "RiskDecisionStub": {
+      "keys": [
+        "evaluated",
+        "intent_id",
+        "reason",
+        "verdict"
+      ],
+      "partial": false,
+      "sources": [
+        "oipulse/backtest/risk.py"
+      ]
+    },
+    "RiskLimits": {
+      "keys": [
+        "max_capital_utilisation",
+        "max_daily_loss",
+        "max_deployed_capital",
+        "max_drawdown",
+        "max_expiry_concentration",
+        "max_gross_delta",
+        "max_gross_gamma",
+        "max_gross_theta",
+        "max_gross_vega",
+        "max_leverage",
+        "max_loss_per_strategy",
+        "max_net_delta",
+        "max_order_notional",
+        "max_order_quantity",
+        "max_orders_per_interval",
+        "max_position_per_instrument",
+        "max_position_per_strategy",
+        "max_position_per_underlying",
+        "max_state_staleness_seconds",
+        "max_strike_concentration",
+        "max_underlying_concentration",
+        "min_state_coverage",
+        "orders_interval_seconds",
+        "reject_unreliable_state",
+        "require_healthy_venue",
+        "session"
+      ],
+      "partial": false,
+      "sources": [
+        "oipulse/trading/risk/policy.py"
+      ]
+    },
+    "RiskPolicy": {
+      "keys": [
+        "configured_limits",
+        "description",
+        "label",
+        "limits",
+        "policy_digest",
+        "policy_id",
+        "scope",
+        "version"
+      ],
+      "partial": false,
+      "sources": [
+        "oipulse/trading/risk/policy.py"
+      ]
+    },
+    "RiskState": {
+      "keys": [
+        "account_id",
+        "as_of",
+        "cash",
+        "daily_loss",
+        "drawdown",
+        "equity",
+        "exposure",
+        "instrument_underlying",
+        "is_expiry_day",
+        "kill_switch",
+        "knowledge_time",
+        "loss_by_strategy",
+        "marks",
+        "orders_in_interval",
+        "pending_intent_ids",
+        "position_by_strategy",
+        "positions",
+        "quality",
+        "realized_pnl",
+        "reserved_cash",
+        "unrealized_pnl",
+        "venue_health"
+      ],
+      "partial": false,
+      "sources": [
+        "oipulse/trading/risk/state.py"
+      ]
+    },
+    "SampleStats": {
+      "keys": [
+        "clusters",
+        "comparisons",
+        "effective_sample",
+        "excluded_incomplete_window",
+        "excluded_quality",
+        "missing_observations",
+        "raw_events"
+      ],
+      "partial": false,
+      "sources": [
+        "oipulse/research/statistics.py"
+      ]
+    },
+    "SamplingPolicy": {
+      "keys": [
+        "cluster_method",
+        "event_sampling_policy",
+        "minimum_event_separation_seconds",
+        "overlap_policy"
+      ],
+      "partial": false,
+      "sources": [
+        "oipulse/research/sampling.py"
+      ]
+    },
+    "SamplingResult": {
+      "keys": [
+        "clusters",
+        "dropped_overlapping",
+        "dropped_separation",
+        "effective_sample",
+        "excluded_quality",
+        "mean_overlap",
+        "policy",
+        "raw_events"
+      ],
+      "partial": false,
+      "sources": [
+        "oipulse/research/sampling.py"
+      ]
+    },
+    "SessionWindow": {
+      "keys": [
+        "closes_at",
+        "expiry_day_closes_at",
+        "opens_at"
+      ],
+      "partial": false,
+      "sources": [
+        "oipulse/trading/risk/policy.py"
+      ]
+    },
+    "SignalEvaluation": {
+      "keys": [
+        "distribution",
+        "minimum_sample",
+        "reportable",
+        "rule_version",
+        "sample",
+        "signal_type",
+        "status"
+      ],
+      "partial": false,
+      "sources": [
+        "oipulse/research/signal_evaluation.py"
+      ]
+    },
+    "SignalProvenance": {
+      "keys": [
+        "build_context_id",
+        "config_digest",
+        "feature_versions",
+        "inputs_digest",
+        "rule_type",
+        "rule_version",
+        "state_checkpoint_ref",
+        "strength_function",
+        "strength_function_version"
+      ],
+      "partial": false,
+      "sources": [
+        "oipulse/signals/model.py"
+      ]
+    },
+    "SignalRuleSpec": {
+      "keys": [
+        "default_config",
+        "definition",
+        "evaluation_interval",
+        "horizon",
+        "implementation_ref",
+        "persistence_evaluations",
+        "quality_requirements",
+        "requires_features",
+        "signal_type",
+        "strength_function",
+        "version"
+      ],
+      "partial": false,
+      "sources": [
+        "oipulse/signals/rules.py"
+      ]
+    },
+    "StateQualityInput": {
+      "keys": [
+        "build_context_id",
+        "coverage_ratio",
+        "market_state_ref",
+        "staleness_seconds",
+        "status"
+      ],
+      "partial": false,
+      "sources": [
+        "oipulse/trading/risk/state.py"
+      ]
+    },
+    "StrategySpec": {
+      "keys": [
+        "config",
+        "content_digest",
+        "definition",
+        "strategy_id",
+        "version"
+      ],
+      "partial": false,
+      "sources": [
+        "oipulse/backtest/strategy.py"
+      ]
+    },
+    "StudyResult": {
+      "keys": [
+        "build_context_id",
+        "builder_version",
+        "content_hash",
+        "dataset_content_hash",
+        "event_definition_digest",
+        "execution",
+        "feature_versions",
+        "horizons",
+        "is_hindsight",
+        "knowledge_horizon",
+        "query_mode",
+        "random_seed",
+        "sample",
+        "signal_versions",
+        "status",
+        "status_detail",
+        "study_digest",
+        "study_id",
+        "study_version"
+      ],
+      "partial": false,
+      "sources": [
+        "oipulse/research/result.py"
+      ]
+    },
+    "SubmissionAuthorization": {
+      "keys": [
+        "approved_quantity",
+        "authorized",
+        "decision_id",
+        "decision_sequence",
+        "detail",
+        "intent_id",
+        "order_id",
+        "refusal"
+      ],
+      "partial": false,
+      "sources": [
+        "oipulse/trading/oms/authorization.py"
+      ]
+    },
+    "SubmissionOutcome": {
+      "keys": [
+        "ack",
+        "authorization",
+        "detail",
+        "kind",
+        "order"
+      ],
+      "partial": false,
+      "sources": [
+        "oipulse/trading/oms/manager.py"
+      ]
+    },
+    "SubmissionResult": {
+      "keys": [
+        "detail",
+        "duplicate",
+        "fills",
+        "intent",
+        "mode",
+        "orders",
+        "reject_reason",
+        "rejected",
+        "risk_decision"
+      ],
+      "partial": false,
+      "sources": [
+        "oipulse/trading/runtime.py"
+      ]
+    },
+    "TradeIntent": {
+      "keys": [
+        "account_id",
+        "build_context_id",
+        "client_order_intent_id",
+        "constraints",
+        "content_digest",
+        "decision_time",
+        "evidence_refs",
+        "instrument_id",
+        "intent_id",
+        "knowledge_horizon",
+        "knowledge_time",
+        "legs",
+        "limit_price",
+        "market_time",
+        "order_type",
+        "quantity",
+        "rationale_ref",
+        "reason",
+        "run_id",
+        "side",
+        "signal_id",
+        "signal_version",
+        "source",
+        "source_ref",
+        "state_checkpoint_ref",
+        "strategy_id",
+        "strategy_version",
+        "time_in_force"
+      ],
+      "partial": true,
+      "sources": [
+        "oipulse/backtest/intents.py",
+        "oipulse/trading/intents.py"
+      ]
+    },
+    "Universe": {
+      "keys": [
+        "description",
+        "expiry_ids",
+        "underlying_ids"
+      ],
+      "partial": false,
+      "sources": [
+        "oipulse/research/study.py"
+      ]
+    },
+    "ValuationResult": {
+      "keys": [
+        "build_context_id",
+        "gross_exposure",
+        "is_complete",
+        "knowledge_time",
+        "market_state_ref",
+        "market_time",
+        "net_exposure",
+        "positions",
+        "state_quality",
+        "total_market_value",
+        "total_unrealized_pnl",
+        "unvalued_instruments"
+      ],
+      "partial": false,
+      "sources": [
+        "oipulse/trading/portfolio/valuation.py"
+      ]
+    }
+  },
+  "serializers": {
+    "account_to_dict": {
+      "keys": [
+        "data",
+        "meta"
+      ],
+      "partial": false,
+      "sources": [
+        "oipulse/trading/serialisation.py"
+      ]
+    },
+    "attribution_to_dict": {
+      "keys": [
+        "data",
+        "meta"
+      ],
+      "partial": false,
+      "sources": [
+        "oipulse/trading/portfolio/serialisation.py"
+      ]
+    },
+    "audit_to_dict": {
+      "keys": [
+        "data",
+        "meta"
+      ],
+      "partial": false,
+      "sources": [
+        "oipulse/trading/serialisation.py"
+      ]
+    },
+    "context_to_dict": {
+      "keys": [
+        "build_context_id",
+        "content_digest",
+        "expiry_ids",
+        "feature_versions",
+        "interval_seconds",
+        "is_hindsight",
+        "knowledge_mode",
+        "period",
+        "pinned_knowledge_horizon",
+        "rule_versions",
+        "run_id",
+        "speed",
+        "step_mode",
+        "underlying_ids"
+      ],
+      "partial": false,
+      "sources": [
+        "oipulse/replay/serialisation.py"
+      ]
+    },
+    "decision_to_dict": {
+      "keys": [
+        "data",
+        "meta"
+      ],
+      "partial": false,
+      "sources": [
+        "oipulse/trading/risk/serialisation.py"
+      ]
+    },
+    "decisions_to_dict": {
+      "keys": [
+        "data",
+        "meta"
+      ],
+      "partial": false,
+      "sources": [
+        "oipulse/trading/risk/serialisation.py"
+      ]
+    },
+    "equity_curve_to_dict": {
+      "keys": [
+        "data",
+        "meta"
+      ],
+      "partial": false,
+      "sources": [
+        "oipulse/backtest/serialisation.py"
+      ]
+    },
+    "evidence_to_dict": {
+      "keys": [
+        "kind",
+        "metric_ref",
+        "observation_refs",
+        "observed_at",
+        "statement",
+        "weight"
+      ],
+      "partial": false,
+      "sources": [
+        "oipulse/signals/serialisation.py"
+      ]
+    },
+    "fills_to_dict": {
+      "keys": [
+        "data",
+        "meta"
+      ],
+      "partial": false,
+      "sources": [
+        "oipulse/trading/serialisation.py"
+      ]
+    },
+    "greeks_to_dict": {
+      "keys": [
+        "data",
+        "meta"
+      ],
+      "partial": false,
+      "sources": [
+        "oipulse/trading/portfolio/serialisation.py"
+      ]
+    },
+    "intent_to_dict": {
+      "keys": [
+        "data",
+        "meta"
+      ],
+      "partial": false,
+      "sources": [
+        "oipulse/trading/serialisation.py"
+      ]
+    },
+    "limit_status_to_dict": {
+      "keys": [
+        "data",
+        "meta"
+      ],
+      "partial": false,
+      "sources": [
+        "oipulse/trading/risk/serialisation.py"
+      ]
+    },
+    "occurrence_to_dict": {
+      "keys": [
+        "acknowledged_at",
+        "acknowledged_by",
+        "attempts",
+        "available_at",
+        "channel",
+        "dedup_key",
+        "delivered",
+        "observed_at",
+        "occurrence_id",
+        "rule_config_digest",
+        "rule_id",
+        "severity",
+        "signal_id",
+        "signal_type",
+        "status",
+        "triggered_at",
+        "underlying_id"
+      ],
+      "partial": false,
+      "sources": [
+        "oipulse/alerts/serialisation.py"
+      ]
+    },
+    "oms_order_to_dict": {
+      "keys": [
+        "data",
+        "meta"
+      ],
+      "partial": false,
+      "sources": [
+        "oipulse/trading/oms/serialisation.py"
+      ]
+    },
+    "oms_orders_to_dict": {
+      "keys": [
+        "data",
+        "meta"
+      ],
+      "partial": false,
+      "sources": [
+        "oipulse/trading/oms/serialisation.py"
+      ]
+    },
+    "order_to_dict": {
+      "keys": [
+        "data",
+        "meta"
+      ],
+      "partial": false,
+      "sources": [
+        "oipulse/trading/serialisation.py"
+      ]
+    },
+    "orders_to_dict": {
+      "keys": [
+        "data",
+        "meta"
+      ],
+      "partial": false,
+      "sources": [
+        "oipulse/trading/serialisation.py"
+      ]
+    },
+    "pnl_to_dict": {
+      "keys": [
+        "data",
+        "meta"
+      ],
+      "partial": false,
+      "sources": [
+        "oipulse/trading/portfolio/serialisation.py"
+      ]
+    },
+    "policy_to_dict": {
+      "keys": [
+        "data",
+        "meta"
+      ],
+      "partial": false,
+      "sources": [
+        "oipulse/trading/risk/serialisation.py"
+      ]
+    },
+    "position_reconciliation_to_dict": {
+      "keys": [
+        "data",
+        "meta"
+      ],
+      "partial": false,
+      "sources": [
+        "oipulse/trading/portfolio/serialisation.py"
+      ]
+    },
+    "positions_to_dict": {
+      "keys": [
+        "data",
+        "meta"
+      ],
+      "partial": true,
+      "sources": [
+        "oipulse/trading/portfolio/serialisation.py",
+        "oipulse/trading/serialisation.py"
+      ]
+    },
+    "reconciliation_run_to_dict": {
+      "keys": [
+        "data",
+        "meta"
+      ],
+      "partial": false,
+      "sources": [
+        "oipulse/trading/oms/serialisation.py"
+      ]
+    },
+    "reconciliation_runs_to_dict": {
+      "keys": [
+        "data",
+        "meta"
+      ],
+      "partial": false,
+      "sources": [
+        "oipulse/trading/oms/serialisation.py"
+      ]
+    },
+    "result_to_dict": {
+      "keys": [
+        "data",
+        "meta"
+      ],
+      "partial": true,
+      "sources": [
+        "oipulse/backtest/serialisation.py",
+        "oipulse/research/serialisation.py"
+      ]
+    },
+    "rule_to_dict": {
+      "keys": [
+        "channel",
+        "config_digest",
+        "cooldown_seconds",
+        "dedup_window_seconds",
+        "destination",
+        "enabled",
+        "id",
+        "min_strength",
+        "on_statuses",
+        "severity",
+        "signal_type",
+        "underlying_id"
+      ],
+      "partial": false,
+      "sources": [
+        "oipulse/alerts/serialisation.py"
+      ]
+    },
+    "signal_to_dict": {
+      "keys": [
+        "available_at",
+        "content_digest",
+        "contradiction_assessment",
+        "created_at",
+        "expires_at",
+        "expiry_id",
+        "horizon_seconds",
+        "invalidation_condition",
+        "knowledge_time",
+        "market_time",
+        "occurrence",
+        "provenance",
+        "quality_status",
+        "rule_version",
+        "signal_id",
+        "status",
+        "strength",
+        "type",
+        "underlying_id",
+        "updated_at"
+      ],
+      "partial": true,
+      "sources": [
+        "oipulse/signals/serialisation.py"
+      ]
+    },
+    "slices_to_dict": {
+      "keys": [
+        "data",
+        "meta"
+      ],
+      "partial": false,
+      "sources": [
+        "oipulse/trading/portfolio/serialisation.py"
+      ]
+    },
+    "snapshot_to_dict": {
+      "keys": [
+        "data",
+        "meta"
+      ],
+      "partial": true,
+      "sources": [
+        "oipulse/trading/portfolio/serialisation.py",
+        "oipulse/trading/serialisation.py"
+      ]
+    },
+    "state_to_dict": {
+      "keys": [
+        "data",
+        "meta"
+      ],
+      "partial": false,
+      "sources": [
+        "oipulse/trading/risk/serialisation.py"
+      ]
+    },
+    "step_to_dict": {
+      "keys": [
+        "index",
+        "is_lockstep",
+        "knowledge_time",
+        "market_time"
+      ],
+      "partial": false,
+      "sources": [
+        "oipulse/replay/serialisation.py"
+      ]
+    },
+    "stepped_state_to_dict": {
+      "keys": [
+        "from_checkpoint",
+        "state",
+        "step",
+        "underlying_id"
+      ],
+      "partial": false,
+      "sources": [
+        "oipulse/replay/serialisation.py"
+      ]
+    },
+    "submission_outcome_to_dict": {
+      "keys": [
+        "data",
+        "meta"
+      ],
+      "partial": false,
+      "sources": [
+        "oipulse/trading/oms/serialisation.py"
+      ]
+    },
+    "timeline_to_dict": {
+      "keys": [
+        "context",
+        "observation_count",
+        "step_count"
+      ],
+      "partial": true,
+      "sources": [
+        "oipulse/replay/serialisation.py"
+      ]
+    },
+    "trades_to_dict": {
+      "keys": [
+        "data",
+        "meta"
+      ],
+      "partial": false,
+      "sources": [
+        "oipulse/backtest/serialisation.py"
+      ]
+    },
+    "valuation_to_dict": {
+      "keys": [
+        "data",
+        "meta"
+      ],
+      "partial": false,
+      "sources": [
+        "oipulse/trading/portfolio/serialisation.py"
+      ]
+    }
+  }
+}
