@@ -337,6 +337,10 @@ def policy_for(method: str, path: str) -> RoutePolicy | None:
     as permission. A route added without a policy is therefore closed by default,
     which is the only safe direction for this particular table to fail in.
     """
+    if path.startswith("/api/v2/"):
+        path = path[len("/api/v2") :]
+    elif path == "/api/v2":
+        path = "/"
     key = (method.upper(), path)
     exact = _BY_KEY.get(key)
     if exact is not None:
@@ -349,4 +353,9 @@ def policy_for(method: str, path: str) -> RoutePolicy | None:
 
 
 def is_public(method: str, path: str) -> bool:
+    if path.startswith("/api/v2/"):
+        path = path[len("/api/v2") :]
+    elif path == "/api/v2":
+        path = "/"
     return (method.upper(), path) in PUBLIC_ROUTES
+

@@ -19,7 +19,7 @@
 const nextConfig = {
   async rewrites() {
     const legacyBase = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
-    const v2Base = process.env.OIPULSE_V2_API_URL ?? "http://localhost:8001";
+    const v2Base = process.env.OIPULSE_V2_API_URL ?? "http://localhost:8000/api/v2";
     return {
       // `beforeFiles` so `/api/v2/*` is matched before the broader `/api/*` rule
       // below could swallow it.

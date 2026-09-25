@@ -67,7 +67,7 @@ function Start-Redis {
 }
 
 function Build-BackendImage {
-    podman build -t $backendImage -f (Join-Path $root "backend\Dockerfile") (Join-Path $root "backend") | Out-Host
+    podman build -t $backendImage -f (Join-Path $root "backend\Dockerfile") $root | Out-Host
 }
 
 function Build-FrontendImage {
@@ -84,7 +84,7 @@ function Start-Api {
         -e DATABASE_URL=postgresql+asyncpg://oi_pulse:changeme@oi-pulse-postgres:5432/oi_pulse `
         -e REDIS_URL=redis://oi-pulse-redis:6379/0 `
         $backendImage `
-        python run_api.py | Out-Host
+        sh -c "cd /app && alembic upgrade head && cd /app/backend && python run_api.py" | Out-Host
 }
 
 function Start-Worker {
@@ -105,6 +105,8 @@ function Start-Frontend {
         --name oi-pulse-frontend `
         --network $networkName `
         -p 3000:3000 `
+        -e OIPULSE_V2_API_URL=http://oi-pulse-api:8000/api/v2 `
+        -e NEXT_PUBLIC_API_URL=http://oi-pulse-api:8000 `
         $frontendImage | Out-Host
 }
 

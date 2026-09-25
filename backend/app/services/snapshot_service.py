@@ -153,7 +153,12 @@ async def save_snapshot(
                 select(OIStrikeSnapshot).where(OIStrikeSnapshot.snapshot_id == prev_snapshot.id)
             )
             for ps in prev_strikes_result.scalars():
-                prev_oi_map[float(ps.strike)] = (ps.call_oi, ps.put_oi, ps.call_ltp, ps.put_ltp)
+                prev_oi_map[float(ps.strike)] = (
+                    int(ps.call_oi) if ps.call_oi is not None else None,
+                    int(ps.put_oi) if ps.put_oi is not None else None,
+                    float(ps.call_ltp) if ps.call_ltp is not None else None,
+                    float(ps.put_ltp) if ps.put_ltp is not None else None,
+                )
 
         # Build analytics inputs
         strike_inputs = [

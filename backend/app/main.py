@@ -64,6 +64,20 @@ def create_app() -> FastAPI:
     app.include_router(collector.router)
     app.include_router(settings.router)
 
+    # ── Mount V2 API (Phases 1-12) ────────────────────────────────────────────
+    try:
+        from oipulse.core.config import load_settings as load_v2_settings
+        from oipulse.api.app import create_app as create_v2_app
+        from oipulse.api.security import InMemorySessionStore
+        v2_settings = load_v2_settings()
+        v2_app = create_v2_app(v2_settings)
+        v2_session_store = InMemorySessionStore()
+        v2_app.state.session_store = v2_session_store
+        app.state.v2_session_store = v2_session_store
+        app.mount("/api/v2", v2_app)
+    except Exception as exc:
+        logger.warning("Could not mount v2 API into main application", exc_info=exc)
+
     # ── Health ────────────────────────────────────────────────────────────────
     @app.get("/api/health", tags=["ops"])
     async def health():

@@ -193,5 +193,12 @@ async def get_option_expiries(
         headers=_build_headers(access_token),
         params={"instrument_key": instrument_key},
     )
-    # Upstox returns {"status":"success","data":["2024-08-29","2024-09-26",...]}
-    return sorted(data.get("data", []))
+    # Upstox returns either a list of string dates or a list of contract dictionaries
+    raw_data = data.get("data", [])
+    expiries: set[str] = set()
+    for item in raw_data:
+        if isinstance(item, str):
+            expiries.add(item)
+        elif isinstance(item, dict) and "expiry" in item:
+            expiries.add(str(item["expiry"]))
+    return sorted(expiries)

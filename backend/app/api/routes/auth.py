@@ -67,7 +67,7 @@ def _map_upstox_auth_error(exc: UpstoxAuthError) -> str:
     return "token_exchange_failed"
 
 
-def _set_session_cookie(response: Response, user_id: int, settings) -> None:
+def _set_session_cookie(response: Response, user_id: int, settings, request: Request | None = None) -> None:
     session_id = f"user:{user_id}"
     signed = sign_session_id(session_id)
     response.set_cookie(
@@ -78,6 +78,30 @@ def _set_session_cookie(response: Response, user_id: int, settings) -> None:
         httponly=True,
         samesite="lax",
     )
+    # Also issue and set v2 session for /terminal
+    try:
+        from datetime import datetime, timezone, timedelta
+        from oipulse.api.security import issue_session, set_session_cookies
+        from oipulse.identity.permissions import ALL_PERMISSIONS
+
+        store = getattr(request.app.state, "v2_session_store", None) if request else None
+        record = issue_session(
+            user_id=str(user_id),
+            permissions=ALL_PERMISSIONS,
+            at=datetime.now(timezone.utc),
+            ttl=timedelta(seconds=settings.session_ttl_seconds),
+        )
+        if store is not None:
+            store.put(record)
+        set_session_cookies(
+            response,
+            record,
+            secure=settings.is_production,
+            ttl=timedelta(seconds=settings.session_ttl_seconds),
+        )
+    except Exception as exc:
+        logger.warning("Could not issue v2 session cookies: %s", exc)
+
 
 
 @router.get("/login")
@@ -197,7 +221,7 @@ async def oauth_callback(
         url=_post_auth_redirect_url(settings),
         status_code=302,
     )
-    _set_session_cookie(redirect_response, user.id, settings)
+    _set_session_cookie(redirect_response, user.id, settings, request=request)
     return redirect_response
 
 
@@ -253,7 +277,7 @@ async def offline_session(request: Request, response: Response, db: DB):
     ))
     await db.commit()
 
-    _set_session_cookie(response, user.id, settings)
+    _set_session_cookie(response, user.id, settings, request=request)
     live = await has_live_market_access(user, db)
     return {
         "status": "ok",
@@ -277,6 +301,8 @@ async def logout(response: Response, user: CurrentUser, db: DB, request: Request
     ))
     await db.commit()
     response.delete_cookie("session_id")
+    response.delete_cookie("oipulse_session")
+    response.delete_cookie("oipulse_csrf")
     return {"status": "ok"}
 
 

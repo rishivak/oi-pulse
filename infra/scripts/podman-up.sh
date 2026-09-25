@@ -73,7 +73,7 @@ start_redis() {
 }
 
 build_backend_image() {
-  podman build -t "$backend_image" -f "$root/backend/Dockerfile" "$root/backend"
+  podman build -t "$backend_image" -f "$root/backend/Dockerfile" "$root"
 }
 
 build_frontend_image() {
@@ -90,7 +90,7 @@ start_api() {
     -e DATABASE_URL=postgresql+asyncpg://oi_pulse:changeme@oi-pulse-postgres:5432/oi_pulse \
     -e REDIS_URL=redis://oi-pulse-redis:6379/0 \
     "$backend_image" \
-    python run_api.py
+    sh -c "cd /app && alembic upgrade head && cd /app/backend && python run_api.py"
 }
 
 start_worker() {
@@ -111,6 +111,8 @@ start_frontend() {
     --name oi-pulse-frontend \
     --network "$network_name" \
     -p 3000:3000 \
+    -e OIPULSE_V2_API_URL=http://oi-pulse-api:8000/api/v2 \
+    -e NEXT_PUBLIC_API_URL=http://oi-pulse-api:8000 \
     "$frontend_image"
 }
 
