@@ -83,6 +83,13 @@ jobs:
       - name: Terminal boundary
         run: python tools/check_terminal_boundary.py
 
+      # Resolves every import and named export in the terminal tree. It stands in
+      # for the part of `tsc` that catches a mistyped path or a renamed export, so
+      # that class of error is caught on a bare interpreter rather than only in the
+      # `frontend` job below. It is not a type check and does not replace one.
+      - name: Terminal imports resolve
+        run: python tools/check_terminal_imports.py
+
       - name: Foundation tests (stdlib only)
         run: python -m unittest discover -s tests -t . -v
 
