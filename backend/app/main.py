@@ -74,6 +74,14 @@ def create_app() -> FastAPI:
         v2_session_store = InMemorySessionStore()
         v2_app.state.session_store = v2_session_store
         app.state.v2_session_store = v2_session_store
+        # Wire StateService so /market/state serves data from legacy snapshots
+        try:
+            from app.services.snapshot_state_adapter import SnapshotBackedStateService
+            v2_app.state.state_service = SnapshotBackedStateService(
+                app_settings.database_url,
+            )
+        except Exception as svc_exc:
+            logger.warning("Could not wire StateService", exc_info=svc_exc)
         app.mount("/api/v2", v2_app)
     except Exception as exc:
         logger.warning("Could not mount v2 API into main application", exc_info=exc)

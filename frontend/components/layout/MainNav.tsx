@@ -11,6 +11,7 @@ import {
   History,
   Bell,
   Settings,
+  Monitor,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -23,6 +24,7 @@ const NAV_ITEMS = [
   { href: "/oi-history", label: "OI History", icon: History },
   { href: "/alerts", label: "Alerts", icon: Bell },
   { href: "/settings", label: "Settings", icon: Settings },
+  { href: "/terminal", label: "v2 Terminal", icon: Monitor },
 ] as const;
 
 export function MainNav() {

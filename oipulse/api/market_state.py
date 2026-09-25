@@ -65,13 +65,28 @@ def _service(request: Request) -> StateService:
 async def market_state(
     request: Request,
     underlying_id: int = Query(..., description="canonical underlying instrument id"),
-    market_time: datetime = Query(..., description="T — when the fact was true"),
+    market_time: datetime | None = Query(
+        None,
+        description=(
+            "T — when the fact was true. Omit for the latest (live) reading; "
+            "the server resolves it to its own wall clock."
+        ),
+    ),
     knowledge_time: datetime | None = Query(
         None, description="K — what OI Pulse knew by. Defaults to market_time."
     ),
 ) -> dict[str, Any]:
-    """Full `MarketState` at `(market_time, knowledge_time)`."""
+    """Full `MarketState` at `(market_time, knowledge_time)`.
+
+    When ``market_time`` is omitted the server resolves it to "now", which is the
+    live reading.  This lets the frontend's live mode — where the URL carries no
+    pinned timestamp — work without fabricating a client-side instant.
+    """
     service = _service(request)
+    if market_time is None:
+        from datetime import timezone
+
+        market_time = datetime.now(timezone.utc)
     if knowledge_time is not None and knowledge_time < market_time:
         # `12-API_SPEC.md` §2: rejected as incoherent. 422, not 400 -- both parameters
         # parsed fine; the combination is what is refused. Enforced here rather than in

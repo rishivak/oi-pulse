@@ -75,7 +75,9 @@ async def feature_values(
     identifier: str,
     scope_kind: str = Query(..., description="underlying | expiry | strike | contract"),
     scope_ref: str = Query(..., description="the scope's identifier"),
-    market_time: datetime = Query(..., description="T"),
+    market_time: datetime | None = Query(
+        None, description="T — omit for the latest (live) reading"
+    ),
     knowledge_time: datetime | None = Query(None, description="K, defaults to market_time"),
     decision_time: datetime | None = Query(
         None,
@@ -96,6 +98,11 @@ async def feature_values(
         spec = REGISTRY.get(identifier, version) if version else REGISTRY.latest(identifier)
     except UnknownFeature as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+
+    from datetime import timezone
+
+    if market_time is None:
+        market_time = datetime.now(timezone.utc)
 
     if knowledge_time is not None and knowledge_time < market_time:
         raise HTTPException(

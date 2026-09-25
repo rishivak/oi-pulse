@@ -28,6 +28,16 @@ export function TerminalNav() {
   return (
     <nav aria-label="Terminal screens" className="border-b border-terminal-border">
       <ul className="flex flex-wrap gap-1 px-2 py-1">
+        <li>
+          <Link
+            href="/"
+            className="inline-block rounded px-2 py-1 font-mono text-xs text-terminal-muted hover:text-terminal-text"
+            title="Switch to legacy dashboard"
+          >
+            ← Dashboard
+          </Link>
+        </li>
+        <li aria-hidden className="self-stretch border-r border-terminal-border" />
         {SCREENS.map((screen) => {
           const active = pathname === screen.route;
           return (

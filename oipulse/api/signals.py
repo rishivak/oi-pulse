@@ -70,7 +70,10 @@ async def list_signals(
     underlying_id: int | None = Query(None),
     signal_type: str | None = Query(None),
     signal_status: str | None = Query(None, alias="status"),
-    market_time: datetime = Query(..., description="T"),
+    market_time: datetime | None = Query(
+        None,
+        description="T — omit for the latest (live) reading",
+    ),
     knowledge_time: datetime | None = Query(None, description="K, defaults to market_time"),
     decision_time: datetime | None = Query(
         None,
@@ -80,6 +83,10 @@ async def list_signals(
         ),
     ),
 ) -> dict[str, Any]:
+    from datetime import timezone
+
+    if market_time is None:
+        market_time = datetime.now(timezone.utc)
     if knowledge_time is not None and knowledge_time < market_time:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
