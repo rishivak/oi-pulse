@@ -41,6 +41,7 @@ from typing import Any
 from oipulse.backtest.intents import OrderType, Side
 
 __all__ = [
+    "ExecutionVenue",
     "InvalidTransition",
     "OrderEvent",
     "OrderState",
@@ -51,19 +52,52 @@ __all__ = [
 ]
 
 
+class ExecutionVenue(StrEnum):
+    """Which venue owns an order's outcome.
+
+    Brief §18 requires paper and broker execution states to stay distinguishable.
+    Carrying the venue on the order rather than inferring it from the adapter in
+    use means a stored order still says which it was, long after the process that
+    created it is gone.
+    """
+
+    PAPER = "PAPER"
+    BROKER = "BROKER"
+
+
 class OrderState(StrEnum):
-    """`11` §4, restricted to the states a paper order can genuinely reach."""
+    """`11-TRADING.md` §4 and §5.
+
+    Phase 8 implemented the subset a *paper* order can reach and deliberately
+    excluded the three states that exist only because a network sits between us
+    and a broker. Phase 10 adds them, because that network now exists in the
+    model even though live submission remains impossible.
+    """
 
     CREATED = "CREATED"
+    #: Handed to an adapter; the outcome is not yet known. Between `SUBMITTING`
+    #: and an answer, an order is genuinely in flight.
+    SUBMITTING = "SUBMITTING"
+    #: The request reached the venue and we hold an acknowledgement.
+    SUBMITTED = "SUBMITTED"
     #: The paper venue has taken the order. Shape, session and funds checked.
     ACCEPTED = "ACCEPTED"
     #: Resting, awaiting a fillable quote.
     OPEN = "OPEN"
     PARTIALLY_FILLED = "PARTIALLY_FILLED"
     FILLED = "FILLED"
+    #: A cancel has been requested but the venue has not confirmed it. `11` §4:
+    #: "A cancel request must not automatically mean the order is cancelled."
+    CANCEL_PENDING = "CANCEL_PENDING"
     CANCELLED = "CANCELLED"
     REJECTED = "REJECTED"
     EXPIRED = "EXPIRED"
+    #: `11` §5, "the state most systems omit". The venue **may** have accepted the
+    #: order and the answer was lost. Never assume rejected, never assume accepted,
+    #: never resubmit from here.
+    UNKNOWN = "UNKNOWN"
+    #: `UNKNOWN` has been escalated; the reconciler owns resolving it.
+    PENDING_RECONCILIATION = "PENDING_RECONCILIATION"
 
 
 class RejectReason(StrEnum):
@@ -87,32 +121,100 @@ class RejectReason(StrEnum):
 #: `PARTIALLY_FILLED -> PARTIALLY_FILLED` is present and deliberate: a second partial
 #: fill is a real transition that must append an event, and omitting it would force
 #: callers to mutate quantities without recording why they changed.
+#: The declared transition table (`11` §4). Nothing else may move an order.
+#:
+#: Three Phase 10 properties are encoded here and are worth reading directly:
+#:
+#: * `UNKNOWN` leads only to `PENDING_RECONCILIATION`. There is **no** edge from
+#:   `UNKNOWN` to `CREATED`, `SUBMITTING` or any terminal state, so a resubmission
+#:   or an assumed outcome is not merely discouraged — the machine has no path for
+#:   it (`11` §5: "Never resubmit from UNKNOWN").
+#: * `PENDING_RECONCILIATION` leads to every state the venue might turn out to be
+#:   in, because reconciliation discovers the truth rather than choosing it.
+#: * `CANCEL_PENDING` can still fill. A cancel races the market, and an order that
+#:   filled before the venue processed the cancel is filled.
 _PERMITTED: dict[OrderState, frozenset[OrderState]] = {
-    OrderState.CREATED: frozenset({OrderState.ACCEPTED, OrderState.REJECTED}),
+    OrderState.CREATED: frozenset(
+        {OrderState.SUBMITTING, OrderState.ACCEPTED, OrderState.REJECTED}
+    ),
+    OrderState.SUBMITTING: frozenset(
+        {
+            OrderState.SUBMITTED,
+            OrderState.ACCEPTED,
+            OrderState.REJECTED,
+            # The ambiguous outcome: request sent, answer lost.
+            OrderState.UNKNOWN,
+        }
+    ),
+    OrderState.SUBMITTED: frozenset(
+        {
+            OrderState.ACCEPTED,
+            OrderState.OPEN,
+            OrderState.PARTIALLY_FILLED,
+            OrderState.FILLED,
+            OrderState.CANCEL_PENDING,
+            OrderState.CANCELLED,
+            OrderState.REJECTED,
+            OrderState.EXPIRED,
+            OrderState.UNKNOWN,
+        }
+    ),
     OrderState.ACCEPTED: frozenset(
         {
             OrderState.OPEN,
             OrderState.PARTIALLY_FILLED,
             OrderState.FILLED,
+            OrderState.CANCEL_PENDING,
             OrderState.CANCELLED,
             OrderState.REJECTED,
             OrderState.EXPIRED,
+            OrderState.UNKNOWN,
         }
     ),
     OrderState.OPEN: frozenset(
         {
             OrderState.PARTIALLY_FILLED,
             OrderState.FILLED,
+            OrderState.CANCEL_PENDING,
             OrderState.CANCELLED,
             OrderState.EXPIRED,
+            OrderState.UNKNOWN,
         }
     ),
     OrderState.PARTIALLY_FILLED: frozenset(
         {
             OrderState.PARTIALLY_FILLED,
             OrderState.FILLED,
+            OrderState.CANCEL_PENDING,
             OrderState.CANCELLED,
             OrderState.EXPIRED,
+            OrderState.UNKNOWN,
+        }
+    ),
+    OrderState.CANCEL_PENDING: frozenset(
+        {
+            # A cancel races the market; the order may fill before it lands.
+            OrderState.PARTIALLY_FILLED,
+            OrderState.FILLED,
+            OrderState.CANCELLED,
+            OrderState.EXPIRED,
+            OrderState.UNKNOWN,
+        }
+    ),
+    # `11` §5: the only way out of UNKNOWN is to go and find out.
+    OrderState.UNKNOWN: frozenset({OrderState.PENDING_RECONCILIATION}),
+    OrderState.PENDING_RECONCILIATION: frozenset(
+        {
+            OrderState.ACCEPTED,
+            OrderState.OPEN,
+            OrderState.PARTIALLY_FILLED,
+            OrderState.FILLED,
+            OrderState.CANCELLED,
+            OrderState.REJECTED,
+            OrderState.EXPIRED,
+            # Reconciliation can legitimately fail to resolve; the order stays
+            # unresolved rather than being guessed into a terminal state.
+            OrderState.UNKNOWN,
         }
     ),
     # Terminal. `11` §4: FILLED, REJECTED, CANCELLED, EXPIRED.
@@ -236,6 +338,27 @@ class PaperOrder:
     #: record which evaluation let it through rather than the latest one.
     authorizing_risk_decision_id: str = ""
     authorizing_decision_sequence: int | None = None
+    #: Which venue owns the outcome (brief §18). Paper by default: an order only
+    #: becomes a broker order by being routed to a broker adapter, and no such
+    #: adapter can submit in this deployment.
+    venue: ExecutionVenue = ExecutionVenue.PAPER
+    #: **Our** identity for one submission attempt. Deterministic, so a retry
+    #: after a restart recomputes the same value. `06` §10 and `11` §5 are explicit
+    #: that this gives us local dedup and audit -- it does **not** oblige the
+    #: provider to reject a duplicate.
+    client_order_attempt_id: str = ""
+    #: The venue's own identity, when it has told us one. `None` is a real and
+    #: common state: after a lost acknowledgement we may have an order at the
+    #: broker whose id we do not know, which is exactly why UNKNOWN exists.
+    provider_order_id: str | None = None
+    #: The venue's own status string, unmapped. Kept beside the canonical state so
+    #: a mapping disagreement is inspectable rather than lost in translation.
+    provider_status: str | None = None
+    #: When the provider says the event happened, and when we received it. `16` of
+    #: the brief: provider receipt time is not market time and the two are not
+    #: collapsed.
+    provider_event_time: datetime | None = None
+    received_at: datetime | None = None
     extras: tuple[tuple[str, str], ...] = field(default_factory=tuple)
 
     def __post_init__(self) -> None:
@@ -301,7 +424,30 @@ class PaperOrder:
 
     @property
     def is_open(self) -> bool:
-        return self.state in (OrderState.ACCEPTED, OrderState.OPEN, OrderState.PARTIALLY_FILLED)
+        """Working at a venue: not terminal, and not in an unresolved limbo.
+
+        `UNKNOWN` and `PENDING_RECONCILIATION` are deliberately excluded. An order
+        we cannot describe is not an open order, and treating it as one would let
+        a caller act on a position that may not exist.
+        """
+        return self.state in (
+            OrderState.SUBMITTING,
+            OrderState.SUBMITTED,
+            OrderState.ACCEPTED,
+            OrderState.OPEN,
+            OrderState.PARTIALLY_FILLED,
+            OrderState.CANCEL_PENDING,
+        )
+
+    @property
+    def is_unresolved(self) -> bool:
+        """`11` §5: the venue may or may not hold this order.
+
+        An unresolved order **blocks further intents for its instrument from the
+        same strategy** until reconciliation settles it, so ambiguity cannot
+        compound.
+        """
+        return self.state in (OrderState.UNKNOWN, OrderState.PENDING_RECONCILIATION)
 
     @property
     def next_sequence(self) -> int:
@@ -392,8 +538,11 @@ class PaperOrder:
             "order_id": self.order_id,
             "account_id": self.account_id,
             "intent_id": self.intent_id,
-            # Always present: a consumer must never have to infer that this is paper.
-            "mode": "PAPER",
+            # Always present: a consumer must never have to infer the venue. Phase 8
+            # hard-coded "PAPER" because there was only one; Phase 10 reports the
+            # order's actual venue, which is still PAPER for everything this
+            # deployment can execute.
+            "mode": self.venue.value,
             "instrument_id": self.instrument_id,
             "side": self.side.value,
             "quantity": self.quantity,
@@ -424,5 +573,14 @@ class PaperOrder:
             "config_digest": self.config_digest,
             "authorizing_risk_decision_id": self.authorizing_risk_decision_id,
             "authorizing_decision_sequence": self.authorizing_decision_sequence,
+            "venue": self.venue.value,
+            "client_order_attempt_id": self.client_order_attempt_id,
+            "provider_order_id": self.provider_order_id,
+            "provider_status": self.provider_status,
+            "provider_event_time": (
+                None if self.provider_event_time is None else self.provider_event_time.isoformat()
+            ),
+            "received_at": None if self.received_at is None else self.received_at.isoformat(),
+            "is_unresolved": self.is_unresolved,
             "events": [e.as_dict() for e in self.events],
         }

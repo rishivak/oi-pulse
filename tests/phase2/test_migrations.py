@@ -121,6 +121,10 @@ PHASE8_TABLES = (
 #: an immutable audit record, retained rather than pruned.
 PHASE9_TABLES = ("risk_profiles", "risk_decisions")
 
+#: Phase 10 reconciliation tables (`0010_phase10_oms_reconciliation`). Also
+#: UNPARTITIONED: a reconciliation run is an immutable audit record.
+PHASE10_TABLES = ("trade_reconciliations", "trade_reconciliation_discrepancies")
+
 
 def _tables(path: Path, function: str, call: str) -> list[str]:
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=path.name)
@@ -166,15 +170,16 @@ class TestMigrationChain(unittest.TestCase):
                 "0007_phase7_replay_backtest",
                 "0008_phase8_paper_trading",
                 "0009_phase9_risk",
+                "0010_phase10_oms_reconciliation",
             ],
             "the chain must run legacy -> Phase 1 -> 2 -> 3 -> 4 -> 5 -> 6 -> 7 -> 8 "
-            "-> 9, no branch",
+            "-> 9 -> 10, no branch",
         )
 
     def test_exactly_one_head(self) -> None:
         downs = {rev.down_revision for rev in self.chain}
         heads = [rev.revision for rev in self.chain if rev.revision not in downs]
-        self.assertEqual(heads, ["0009_phase9_risk"])
+        self.assertEqual(heads, ["0010_phase10_oms_reconciliation"])
 
     def test_upgrading_from_the_legacy_revision_reaches_phase_2(self) -> None:
         """A database stamped at `002` must have a path to head without manual edits."""
@@ -196,6 +201,7 @@ class TestMigrationChain(unittest.TestCase):
                 "0007_phase7_replay_backtest",
                 "0008_phase8_paper_trading",
                 "0009_phase9_risk",
+                "0010_phase10_oms_reconciliation",
             ],
         )
 
@@ -580,6 +586,63 @@ class TestTableInventory(unittest.TestCase):
             with self.subTest(statement=dropped):
                 self.assertIn(dropped, source)
 
+    def test_phase_10_creates_exactly_the_reconciliation_tables(self) -> None:
+        created = _tables(V2 / "0010_phase10_oms_reconciliation.py", "upgrade", "create_table")
+        self.assertEqual(sorted(created), sorted(PHASE10_TABLES))
+
+    def test_phase_10_provider_identity_columns_are_nullable(self) -> None:
+        """Brief §8 and §28: an absent provider id must be representable.
+
+        After a lost acknowledgement we may hold an order at the venue whose id we
+        never learned. A NOT NULL here would force a fabricated placeholder, which
+        is the specific thing the brief forbids.
+        """
+        source = (V2 / "0010_phase10_oms_reconciliation.py").read_text(encoding="utf-8")
+        for column in ("provider_order_id", "provider_status", "client_order_attempt_id"):
+            with self.subTest(column=column):
+                self.assertIn(f'sa.Column("{column}", sa.Text, nullable=True)', source)
+
+    def test_phase_10_local_attempt_identity_is_unique(self) -> None:
+        """The durable half of *local* submission idempotency.
+
+        Deliberately not described as broker-side dedup: `06` §10 says our key does
+        not bind the provider, and the migration's comment says so too.
+        """
+        source = (V2 / "0010_phase10_oms_reconciliation.py").read_text(encoding="utf-8")
+        self.assertIn("uq_trade_orders_client_attempt", source)
+        self.assertIn("does not bind the provider", source)
+
+    def test_phase_10_reconciliation_runs_are_content_addressed(self) -> None:
+        """Brief §13 at the storage layer: unchanged evidence collides."""
+        source = (V2 / "0010_phase10_oms_reconciliation.py").read_text(encoding="utf-8")
+        self.assertIn("uq_trade_reconciliations_digest", source)
+        # A run cannot claim cleanliness while recording outstanding work.
+        self.assertIn("ck_trade_reconciliations_clean_means_nothing_outstanding", source)
+
+    def test_phase_10_introduces_no_phase_11_table(self) -> None:
+        """Portfolio snapshots and attribution are Phase 11.
+
+        Checks the tables actually created rather than the word anywhere in the
+        file, so the docstring's disclaimer is not mistaken for a breach.
+        """
+        created = _tables(V2 / "0010_phase10_oms_reconciliation.py", "upgrade", "create_table")
+        for table in created:
+            for banned in ("portfolio", "attribution", "snapshot"):
+                with self.subTest(table=table, banned=banned):
+                    self.assertNotIn(banned, table.lower())
+
+    def test_phase_10_downgrade_removes_the_columns_it_added(self) -> None:
+        source = (V2 / "0010_phase10_oms_reconciliation.py").read_text(encoding="utf-8")
+        for dropped in (
+            'op.drop_column("trade_orders", "venue")',
+            'op.drop_column("trade_orders", "provider_order_id")',
+            'op.drop_column("trade_orders", "client_order_attempt_id")',
+            "uq_trade_orders_client_attempt",
+            "ck_trade_orders_venue",
+        ):
+            with self.subTest(statement=dropped):
+                self.assertIn(dropped, source)
+
     def test_downgrade_mirrors_upgrade_in_all_revisions(self) -> None:
         """A downgrade that forgets a table leaves a schema the next upgrade cannot build."""
         for name in (
@@ -592,6 +655,7 @@ class TestTableInventory(unittest.TestCase):
             "0007_phase7_replay_backtest.py",
             "0008_phase8_paper_trading.py",
             "0009_phase9_risk.py",
+            "0010_phase10_oms_reconciliation.py",
         ):
             with self.subTest(revision=name):
                 created = _tables(V2 / name, "upgrade", "create_table")
@@ -619,6 +683,7 @@ class TestTableInventory(unittest.TestCase):
             "0007_phase7_replay_backtest.py",
             "0008_phase8_paper_trading.py",
             "0009_phase9_risk.py",
+            "0010_phase10_oms_reconciliation.py",
         ):
             source = (V2 / name).read_text(encoding="utf-8")
             for table in legacy:

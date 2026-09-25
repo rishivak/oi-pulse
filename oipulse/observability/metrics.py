@@ -22,9 +22,13 @@ __all__ = [
     "record_alert_suppressed",
     "record_alert_triggered",
     "record_backtest_run",
+    "record_capability_refusal",
     "record_feature_computed",
     "record_feature_skipped",
-    "record_live_execution_refusal",
+    "record_oms_duplicate_attempt",
+    "record_oms_order_state",
+    "record_oms_submission",
+    "record_oms_unresolved",
     "record_paper_account",
     "record_paper_execution_latency",
     "record_paper_fill",
@@ -33,6 +37,7 @@ __all__ = [
     "record_paper_order",
     "record_paper_sequence_gap",
     "record_provenance_failure",
+    "record_reconciliation_run",
     "record_replay_reconstruction",
     "record_replay_resume_rejection",
     "record_replay_run",
@@ -49,6 +54,7 @@ __all__ = [
     "record_signal_idempotent_repeat",
     "record_signal_skipped",
     "record_signal_transition",
+    "record_time_to_resolve",
 ]
 
 #: (metric name, sorted label pairs). Named because it appears in four signatures and
@@ -664,3 +670,146 @@ def record_risk_duplicate(account_id: str, kind: str) -> None:
 def record_risk_contention(account_id: str, resource: str) -> None:
     """Two intents competing for the same headroom; one had to re-evaluate."""
     METRICS.inc(RISK_CONTENTION_RETRIES, {"account": account_id, "resource": resource})
+
+
+# --- Phase 10 OMS and reconciliation (`16-OBSERVABILITY.md`, `11-TRADING.md` §6).
+#
+# Brief §26: "Do not expose misleading 'live trading successful' metrics while live
+# execution is disabled." There is therefore no `orders_placed_total` and no
+# `live_orders_total` here. Every name says `oms_` or `reconciliation_`, and the
+# submission counter is labelled by outcome so an acknowledgement from the *paper*
+# venue can never be read as a live fill.
+OMS_ORDERS = "oms_orders_total"
+OMS_SUBMIT_ATTEMPTS = "oms_submit_attempts_total"
+#: Submissions the authorization gate refused, labelled by refusal reason.
+OMS_SUBMISSIONS_BLOCKED = "oms_submissions_blocked_total"
+OMS_PROVIDER_ACKS = "oms_provider_acknowledgements_total"
+OMS_PROVIDER_REJECTS = "oms_provider_rejects_total"
+#: Submissions that got no answer. `11` §5's ambiguous outcome. Never zero in a
+#: healthy system with a real network, and every one must reconcile.
+OMS_AMBIGUOUS_SUBMISSIONS = "oms_ambiguous_submissions_total"
+OMS_FILLS = "oms_fills_total"
+OMS_CANCELLATIONS = "oms_cancellations_total"
+#: Orders currently in UNKNOWN or PENDING_RECONCILIATION. A gauge, not a counter:
+#: what matters is how many are outstanding right now, because each one blocks its
+#: instrument for its strategy.
+OMS_UNRESOLVED_ORDERS = "oms_unresolved_orders"
+#: Round-trip to the venue, in seconds. A *system* latency: it is not market time
+#: and must never be read as one.
+OMS_PROVIDER_LATENCY = "oms_provider_latency_seconds"
+#: Attempts that were already sent and were refused locally. The local half of
+#: submission idempotency doing its job.
+OMS_DUPLICATE_ATTEMPTS = "oms_duplicate_attempts_total"
+
+RECONCILIATION_RUNS = "reconciliation_runs_total"
+RECONCILIATION_DURATION = "reconciliation_duration_seconds"
+#: Labelled by kind and resolution, so "the provider was ahead and we caught up"
+#: and "there is an order at the broker we cannot explain" are not one number.
+RECONCILIATION_DISCREPANCIES = "reconciliation_discrepancies_total"
+RECONCILIATION_FILLS_INSERTED = "reconciliation_fills_inserted_total"
+#: Discrepancies no automatic action is authorised for. `11` §6 requires alerting
+#: on these; a rising count means a human is needed, not that the system is coping.
+RECONCILIATION_NEEDS_ATTENTION = "reconciliation_needs_attention_total"
+#: Provider observations already applied. Duplicates absorbed, not re-applied.
+RECONCILIATION_DUPLICATE_OBSERVATIONS = "reconciliation_duplicate_observations_total"
+#: How long an order stayed unresolved before reconciliation settled it.
+RECONCILIATION_TIME_TO_RESOLVE = "reconciliation_time_to_resolve_seconds"
+#: Whether the most recent run was clean. `18` Phase 10: trader is not ready until
+#: it is, so this is the metric an operator gates a deployment on.
+RECONCILIATION_LAST_RUN_CLEAN = "reconciliation_last_run_clean"
+#: Attempts to reach a live execution path. Must always be zero: no adapter can
+#: submit, so a non-zero value means something tried and the barrier held.
+LIVE_EXECUTION_REFUSALS = "live_execution_refusals_total"
+
+
+def record_oms_submission(
+    *,
+    venue: str,
+    outcome: str,
+    refusal: str | None = None,
+    latency_seconds: float | None = None,
+) -> None:
+    """One submission attempt, labelled by what actually happened.
+
+    `outcome` carries the adapter's answer -- acknowledged, rejected, ambiguous,
+    not authorized, capability denied -- and `venue` says which venue answered. A
+    dashboard therefore cannot show an acknowledgement without showing that it came
+    from `PAPER`, which is what keeps brief §26's prohibition honest.
+    """
+    labels = {"venue": venue}
+    METRICS.inc(OMS_SUBMIT_ATTEMPTS, {**labels, "outcome": outcome})
+    if outcome == "ACKNOWLEDGED":
+        METRICS.inc(OMS_PROVIDER_ACKS, labels)
+    elif outcome == "REJECTED":
+        METRICS.inc(OMS_PROVIDER_REJECTS, labels)
+    elif outcome == "AMBIGUOUS":
+        METRICS.inc(OMS_AMBIGUOUS_SUBMISSIONS, labels)
+    elif outcome in ("NOT_AUTHORIZED", "CAPABILITY_DENIED"):
+        METRICS.inc(OMS_SUBMISSIONS_BLOCKED, {**labels, "reason": refusal or outcome})
+    if latency_seconds is not None:
+        METRICS.observe(OMS_PROVIDER_LATENCY, latency_seconds, labels)
+
+
+def record_oms_order_state(venue: str, state: str) -> None:
+    METRICS.inc(OMS_ORDERS, {"venue": venue, "state": state})
+    if state == "CANCELLED":
+        METRICS.inc(OMS_CANCELLATIONS, {"venue": venue})
+
+
+def record_oms_unresolved(venue: str, count: int) -> None:
+    """A gauge: how many orders are unresolved **now**."""
+    METRICS.set_gauge(OMS_UNRESOLVED_ORDERS, float(count), {"venue": venue})
+
+
+def record_oms_duplicate_attempt(venue: str) -> None:
+    METRICS.inc(OMS_DUPLICATE_ATTEMPTS, {"venue": venue})
+
+
+def record_reconciliation_run(
+    *,
+    trigger: str,
+    duration_seconds: float,
+    is_clean: bool,
+    discrepancies: dict[tuple[str, str], int],
+    fills_inserted: int,
+    needs_attention: int,
+    duplicates_absorbed: int = 0,
+) -> None:
+    """One reconciliation pass, with its discrepancies broken out.
+
+    `discrepancies` is keyed by `(kind, resolution)` rather than by kind alone: a
+    `PROVIDER_AHEAD` that was applied is routine, and a `PROVIDER_AHEAD` that could
+    not be resolved is not, and one label cannot tell them apart.
+    """
+    labels = {"trigger": trigger}
+    METRICS.inc(RECONCILIATION_RUNS, {**labels, "clean": str(is_clean).lower()})
+    METRICS.observe(RECONCILIATION_DURATION, duration_seconds, labels)
+    METRICS.set_gauge(RECONCILIATION_LAST_RUN_CLEAN, 1.0 if is_clean else 0.0, {})
+    for (kind, resolution), count in sorted(discrepancies.items()):
+        METRICS.inc(
+            RECONCILIATION_DISCREPANCIES,
+            {**labels, "kind": kind, "resolution": resolution},
+            count,
+        )
+    if fills_inserted:
+        METRICS.inc(RECONCILIATION_FILLS_INSERTED, labels, fills_inserted)
+    if needs_attention:
+        METRICS.inc(RECONCILIATION_NEEDS_ATTENTION, labels, needs_attention)
+    if duplicates_absorbed:
+        METRICS.inc(RECONCILIATION_DUPLICATE_OBSERVATIONS, labels, duplicates_absorbed)
+
+
+def record_time_to_resolve(seconds: float) -> None:
+    """How long an order stayed unresolved. Market-time duration, not wall clock."""
+    METRICS.observe(RECONCILIATION_TIME_TO_RESOLVE, seconds, {})
+
+
+def record_capability_refusal(who: str, capability: str) -> None:
+    """An adapter was asked for a capability it does not hold. The barrier held.
+
+    Distinct from `record_paper_account`'s mode refusal, which is about an
+    *account* claiming to be live. This is about an *adapter* being asked to
+    submit. Both must always be zero; conflating them would hide which barrier
+    was tested.
+    """
+    METRICS.inc(LIVE_EXECUTION_REFUSALS, {"who": who, "capability": capability})
