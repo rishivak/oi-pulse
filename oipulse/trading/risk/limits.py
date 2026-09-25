@@ -609,8 +609,6 @@ def check_venue_health(
     if not limits.require_healthy_venue:
         return _not_configured(LimitCategory.BROKER, "require_healthy_venue")
     health = state.venue_health
-    if health is None:  # pragma: no cover - typed non-optional, defensive only
-        return _not_evaluable(LimitCategory.BROKER, "require_healthy_venue", "venue health")
     return LimitEvaluation(
         category=LimitCategory.BROKER,
         limit_id="require_healthy_venue",
