@@ -35,7 +35,7 @@ from collections.abc import Awaitable, Callable
 from datetime import datetime, timedelta
 from typing import Any
 
-from fastapi import Request, Response
+from fastapi import FastAPI, Request, Response
 from fastapi.responses import JSONResponse
 
 from oipulse.core.clock import Clock, SystemClock
@@ -242,7 +242,7 @@ def _refusal(decision: AccessDecision, path: str) -> JSONResponse:
     return response
 
 
-def install_security(app: Any, config: SecurityConfig) -> None:
+def install_security(app: FastAPI, config: SecurityConfig) -> None:
     """Attach the gate to every request.
 
     Registered as an HTTP middleware so no route can be added outside it. The order

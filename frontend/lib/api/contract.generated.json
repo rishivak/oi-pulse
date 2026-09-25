@@ -1,7 +1,7 @@
 {
   "contract_version": 1,
   "generator": "tools/export_api_contract.py",
-  "source_digest": "b0df328d11e3bfeaf5ba07042a40503b0dae02657f865678906924c6baf88768",
+  "source_digest": "a08f1f8c36d84bb476589a08e3adde1c0f0946b577c3f6e62332403f9057ec28",
   "routes": [
     {
       "method": "GET",

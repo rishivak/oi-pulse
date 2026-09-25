@@ -11,7 +11,7 @@
 // is only ever used as one.
 
 export const CONTRACT_VERSION = 1;
-export const CONTRACT_SOURCE_DIGEST = "b0df328d11e3bfeaf5ba07042a40503b0dae02657f865678906924c6baf88768";
+export const CONTRACT_SOURCE_DIGEST = "a08f1f8c36d84bb476589a08e3adde1c0f0946b577c3f6e62332403f9057ec28";
 
 export interface BackendRoute {
   readonly method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
