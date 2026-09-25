@@ -38,6 +38,7 @@ from oipulse.alerts.model import (
 )
 from oipulse.alerts.routing import AlertRouter, dedup_key_for
 from oipulse.signals.model import SignalStatus
+from tests._http_auth import authenticate
 from tests.phase5._fixtures import at, signal
 
 ALERTS_SOURCE = (REPO / "oipulse/api/alerts.py").read_text(encoding="utf-8")
@@ -429,6 +430,9 @@ class TestSignalsAndAlertsFastAPIEndpoints(unittest.TestCase):
         )
         self.app = create_app(self.settings)
         self.client = TestClient(self.app)
+        # The Phase 12 gate protects every route; a client without a
+        # session now tests the 401, which is covered in tests/phase12/.
+        authenticate(self.app, self.client)
 
     def test_signals_types_returns_catalogue(self):
         resp = self.client.get("/signals/types")

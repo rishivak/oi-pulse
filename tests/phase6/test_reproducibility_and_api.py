@@ -33,6 +33,7 @@ from oipulse.research.signal_evaluation import attribute_evidence, evaluate_by_t
 from oipulse.research.statistics import OutcomeSeries, describe, excursion
 from oipulse.research.study import EventStudy, QueryMode
 from oipulse.signals.model import SignalStatus
+from tests._http_auth import authenticate
 from tests.phase5._fixtures import signal as make_signal
 from tests.phase6._fixtures import (
     at,
@@ -572,6 +573,9 @@ class TestResearchFastAPIEndpoints(unittest.TestCase):
         )
         self.app = create_app(self.settings)
         self.client = TestClient(self.app)
+        # The Phase 12 gate protects every route; a client without a
+        # session now tests the 401, which is covered in tests/phase12/.
+        authenticate(self.app, self.client)
 
     def test_unconfigured_store_returns_503(self):
         resp = self.client.get("/research/studies")

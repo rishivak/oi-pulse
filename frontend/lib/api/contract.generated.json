@@ -1,7 +1,7 @@
 {
   "contract_version": 1,
   "generator": "tools/export_api_contract.py",
-  "source_digest": "edbc9126a61c44dfe3e20838368f6c2826b264e2e148dc6ea3dfa9875388b099",
+  "source_digest": "b0df328d11e3bfeaf5ba07042a40503b0dae02657f865678906924c6baf88768",
   "routes": [
     {
       "method": "GET",
@@ -166,6 +166,22 @@
         "available_versions"
       ],
       "meta_partial": false
+    },
+    {
+      "method": "GET",
+      "path": "/journal/entries",
+      "operation": "list_entries",
+      "module": "oipulse/api/journal.py",
+      "meta_keys": [],
+      "meta_partial": true
+    },
+    {
+      "method": "GET",
+      "path": "/journal/entries/{entry_id}",
+      "operation": "get_entry",
+      "module": "oipulse/api/journal.py",
+      "meta_keys": [],
+      "meta_partial": true
     },
     {
       "method": "GET",
@@ -1297,6 +1313,25 @@
         "oipulse/trading/intents.py"
       ]
     },
+    "JournalEntry": {
+      "keys": [
+        "account_id",
+        "cash_after",
+        "cash_delta",
+        "entry_id",
+        "entry_type",
+        "fees_delta",
+        "fill_key",
+        "occurred_at",
+        "order_id",
+        "realized_pnl_delta",
+        "source_event_key"
+      ],
+      "partial": false,
+      "sources": [
+        "oipulse/trading/journal.py"
+      ]
+    },
     "KillSwitchState": {
       "keys": [
         "engaged",
@@ -2221,6 +2256,26 @@
       ]
     },
     "intent_to_dict": {
+      "keys": [
+        "data",
+        "meta"
+      ],
+      "partial": false,
+      "sources": [
+        "oipulse/trading/serialisation.py"
+      ]
+    },
+    "journal_entry_to_dict": {
+      "keys": [
+        "data",
+        "meta"
+      ],
+      "partial": false,
+      "sources": [
+        "oipulse/trading/serialisation.py"
+      ]
+    },
+    "journal_page_to_dict": {
       "keys": [
         "data",
         "meta"

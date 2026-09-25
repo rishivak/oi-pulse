@@ -18,9 +18,13 @@ import {
   screenById,
 } from "@/lib/terminal/screens";
 
-test("twelve workflow screens, plus the Command Center that routes between them", () => {
-  assert.equal(WORKFLOW_SCREENS.length, 12);
-  assert.equal(SCREENS.length, 13);
+test("all fourteen named screens ship, none ahead of its backend", () => {
+  // `13-FRONTEND_IA.md` §2 names fourteen: the Command Center and thirteen
+  // workflow screens. The first Phase 12 pass shipped twelve of the thirteen,
+  // withholding Journal for having no read API; the remediation added the
+  // `/journal` contract, so the no-stub condition now holds for all of them.
+  assert.equal(WORKFLOW_SCREENS.length, 13);
+  assert.equal(SCREENS.length, 14);
   assert.equal(SCREENS[0].id, COMMAND_CENTER.id);
 });
 
@@ -33,19 +37,20 @@ test("every API a screen declares exists in the backend", () => {
   }
 });
 
-test("Journal is withheld, with the reason and the unblocking condition recorded", () => {
-  assert.equal(WITHHELD_SCREENS.length, 1);
-  const journal = WITHHELD_SCREENS[0];
-  assert.equal(journal.id, "journal");
-  assert.match(journal.reason, /No read API exists/);
-  assert.notEqual(journal.unblockedBy, "");
-  // And it is genuinely absent from the shipped set, not merely flagged.
-  assert.equal(screenById("journal"), undefined);
-  assert.equal(SCREENS.some((s) => s.route.includes("journal")), false);
+test("nothing is withheld, and the list survives for when something is", () => {
+  assert.equal(WITHHELD_SCREENS.length, 0);
 });
 
-test("the withheld screen's absence is justified by the contract, not asserted", () => {
-  assert.equal([...ROUTE_PATHS].some((t) => t.includes("/journal")), false);
+test("Journal ships against a real backend, not a placeholder", () => {
+  const journal = screenById("journal");
+  assert.notEqual(journal, undefined);
+  assert.equal(journal?.route, "/terminal/journal");
+  // The screen's claim is checked against the generated contract, so it cannot
+  // declare a capability the backend does not serve.
+  for (const key of journal?.apis ?? []) {
+    assert.ok(ROUTE_PATHS.has(key), `${key} does not exist`);
+  }
+  assert.ok(ROUTE_PATHS.has("GET /journal/entries"));
 });
 
 test("each screen answers exactly one question, and states it", () => {

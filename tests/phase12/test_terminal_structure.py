@@ -29,17 +29,19 @@ def _without_comments(text: str) -> str:
 
 
 class ScreenInventory(unittest.TestCase):
-    def test_twelve_workflow_screens_plus_the_command_center(self) -> None:
-        """`20-ARCHITECTURE_FREEZE.md` §286: "twelve screens, none ahead of its backend".
+    def test_all_fourteen_named_screens_ship(self) -> None:
+        """`13-FRONTEND_IA.md` §2 names fourteen, and all of them now have backends.
 
-        `13-FRONTEND_IA.md` §2 draws fourteen names; Journal is withheld for having
-        no read API, and the Command Center routes rather than being a workflow. The
-        arithmetic that reconciles the three statements is 14 - 1 - 1 = 12.
+        The roadmap's "twelve workflow screens" contradicts its own fourteen-name
+        deliverable list, so the count is not the testable thing; the freeze's
+        qualifier is. `20-ARCHITECTURE_FREEZE.md` §286 gates on "none ahead of its
+        backend", and the Journal read contract added by the remediation is what
+        makes that true for the last of them.
         """
         routes = re.findall(r'route:\s*"(/terminal[^"]*)"', SCREENS)
-        self.assertEqual(len(routes), 13)
+        self.assertEqual(len(routes), 14)
         self.assertIn("/terminal", routes)
-        self.assertEqual(len([r for r in routes if r != "/terminal"]), 12)
+        self.assertIn("/terminal/journal", routes)
 
     def test_every_declared_route_has_a_page(self) -> None:
         for route in re.findall(r'route:\s*"(/terminal[^"]*)"', SCREENS):
@@ -60,15 +62,18 @@ class ScreenInventory(unittest.TestCase):
         for name in ("error.tsx", "loading.tsx", "not-found.tsx", "layout.tsx"):
             self.assertTrue((PAGES / name).exists(), f"{name} is missing")
 
-    def test_journal_is_withheld_and_has_no_route(self) -> None:
+    def test_journal_ships_against_a_real_route(self) -> None:
         self.assertIn('id: "journal"', SCREENS)
+        self.assertTrue((PAGES / "journal" / "page.tsx").exists())
+        served = {
+            f"{r['method']} {r['path']}" for r in CONTRACT["routes"] if "/journal" in r["path"]
+        }
+        self.assertEqual(served, {"GET /journal/entries", "GET /journal/entries/{entry_id}"})
+
+    def test_nothing_is_withheld_and_the_list_remains(self) -> None:
+        """The list outlives its one entry: the rule it serves is not Journal-specific."""
         self.assertIn("WITHHELD_SCREENS", SCREENS)
-        self.assertFalse((PAGES / "journal").exists())
-        self.assertEqual(
-            [r for r in CONTRACT["routes"] if "/journal" in r["path"]],
-            [],
-            "a /journal route now exists; the Journal screen should be reconsidered",
-        )
+        self.assertIn("WITHHELD_SCREENS: readonly WithheldScreen[] = [] as const", SCREENS)
 
     def test_no_coming_soon_anywhere(self) -> None:
         """`13` §2 rejects stubs. A presence check over the *rendered* text.

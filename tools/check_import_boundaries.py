@@ -309,6 +309,22 @@ CONTRACTS: tuple[Contract, ...] = (
         ),
     ),
     Contract(
+        name="identity-is-pure",
+        subject="identity",
+        allowed_only=frozenset(),
+        forbidden_modules=frozenset({f"{ROOT_PACKAGE}.core.clock"}),
+        forbidden_external=_DB_AND_IO,
+        rationale=(
+            "The access decision must be testable with no web stack and no database "
+            "installed, because in this environment neither is. Phase 12's first pass "
+            "expressed security as FastAPI wiring and shipped it unexercised; "
+            "17-SECURITY.md §3, §4 and §7 are now pure functions over RequestFacts, "
+            "and oipulse/api/security.py is the only adapter. No clock either: session "
+            "expiry takes its `at` as an argument, which is what makes 'this expires in "
+            "one second' a test rather than a sleep."
+        ),
+    ),
+    Contract(
         name="core-is-dependency-free",
         subject="core",
         allowed_only=frozenset(),

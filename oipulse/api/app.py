@@ -28,6 +28,7 @@ from oipulse.api.alerts import router as alerts_router
 from oipulse.api.backtest import router as backtest_router
 from oipulse.api.features import router as features_router
 from oipulse.api.health import registry, router
+from oipulse.api.journal import router as journal_router
 from oipulse.api.market_state import router as market_router
 from oipulse.api.paper_trading import router as paper_trading_router
 from oipulse.api.portfolio import router as portfolio_router
@@ -35,6 +36,7 @@ from oipulse.api.reconciliation import router as reconciliation_router
 from oipulse.api.replay import router as replay_router
 from oipulse.api.research import router as research_router
 from oipulse.api.risk import router as risk_router
+from oipulse.api.security import SecurityConfig, install_security
 from oipulse.api.signals import router as signals_router
 from oipulse.core.config import Settings
 from oipulse.observability.logging import get_logger
@@ -108,6 +110,36 @@ def create_app(settings: Settings) -> FastAPI:
     # what it was permitted to know, and defaulting to latest knowledge would answer
     # a different question silently. Every attribution response carries its residual.
     app.include_router(portfolio_router)
+    # Phase 12 remediation. `12-API_SPEC.md` §3 specifies `/journal`; no phase had
+    # implemented it, so the Journal screen had no backend and was withheld. This
+    # is the read half. Writing an entry is a domain action -- `journal_entries`
+    # carries a `source_event_key`, so entries are derived from events rather than
+    # authored -- and no phase specifies an authoring path, so none is invented.
+    app.include_router(journal_router)
+
+    # Phase 12 remediation, and the first control any request meets.
+    #
+    # Independent verification returned NOT VERIFIED with three security blockers:
+    # no session validation, no permission enforcement, no CSRF. `install_security`
+    # is all three, as HTTP middleware rather than per-route dependencies -- a
+    # dependency has to be remembered on each route and a route added without it is
+    # open, whereas middleware runs on everything and
+    # `oipulse/identity/permissions.py` refuses a path it has no policy for.
+    #
+    # Registered AFTER the routers on purpose: Starlette runs middleware outermost
+    # first regardless of registration order relative to routes, and adding it here
+    # keeps the security decision visibly last in this file, where a reader looking
+    # for "what protects these routers" finds it.
+    install_security(
+        app,
+        SecurityConfig(
+            allowed_origins=settings.allowed_origins,
+            # `Secure` is enforced in production (`17` §3). Requiring it in
+            # development would make the cookie unusable over plain HTTP, and a
+            # cookie that only works in production is a cookie nobody tests.
+            secure_cookies=settings.is_production,
+        ),
+    )
 
     # Readiness covers this process's own dependencies: PostgreSQL (durable truth),
     # Redis (coordination) and the packages the role needs locally. Phase 1 registered

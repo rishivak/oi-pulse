@@ -61,6 +61,33 @@ test("a look-ahead refusal is never retried, even as a read", () => {
   assert.equal(retryDecision("GET", error).retry, false);
 });
 
+test("a 401 is authentication, distinct from a permission refusal", () => {
+  // The access gate answers 401 with the code `PERMISSION_DENIED`, because
+  // `12-API_SPEC.md` §4 defines no code for "not authenticated". The two need
+  // different treatments -- sign in, versus ask for a permission -- so the status
+  // wins over the code here.
+  const unauth = classifyError(401, { error: { code: "PERMISSION_DENIED" } });
+  assert.equal(unauth.meaning.code, "AUTHENTICATION_REQUIRED");
+  assert.equal(unauth.meaning.presentation, "BLOCKING");
+  assert.match(unauth.meaning.guidance, /does not say which/);
+
+  const forbidden = classifyError(403, { error: { code: "PERMISSION_DENIED" } });
+  assert.equal(forbidden.meaning.code, "PERMISSION_DENIED");
+  assert.equal(forbidden.meaning.presentation, "PANEL");
+});
+
+test("a permission refusal says hiding the control would not have helped", () => {
+  assert.match(meaningOf("PERMISSION_DENIED").guidance, /refusal is the server's/);
+});
+
+test("neither authentication nor permission is retried automatically", () => {
+  for (const status of [401, 403]) {
+    const error = classifyError(status, null);
+    assert.equal(retryDecision("GET", error).retry, false);
+    assert.equal(retryDecision("POST", error).retry, false);
+  }
+});
+
 test("an UNKNOWN order state blocks rather than warns", () => {
   const meaning = meaningOf("ORDER_STATE_UNKNOWN");
   assert.equal(meaning.presentation, "BLOCKING");

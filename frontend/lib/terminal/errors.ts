@@ -22,6 +22,7 @@ export type ApiErrorCode =
   | "RISK_REJECTED"
   | "ORDER_STATE_UNKNOWN"
   | "LIVE_TRADING_DISABLED"
+  | "AUTHENTICATION_REQUIRED"
   | "PERMISSION_DENIED"
   | "RATE_LIMITED"
   | "VALIDATION_FAILED"
@@ -107,10 +108,23 @@ const MEANINGS: Readonly<Record<ApiErrorCode, Omit<ApiErrorMeaning, "code">>> = 
     presentation: "PANEL",
     readRetryable: false,
   },
+  AUTHENTICATION_REQUIRED: {
+    httpStatus: 401,
+    title: "Not signed in",
+    guidance:
+      "There is no valid session. It may have expired, been revoked, or never " +
+      "existed — the server does not say which, so that a probe cannot learn " +
+      "whether a session id was real. Sign in again; nothing on this screen is current.",
+    presentation: "BLOCKING",
+    readRetryable: false,
+  },
   PERMISSION_DENIED: {
     httpStatus: 403,
     title: "Permission denied",
-    guidance: "The principal lacks the permission this view requires.",
+    guidance:
+      "The session is valid and lacks the permission this view requires, or the " +
+      "resource belongs to another identity. Hiding the control would not have " +
+      "changed this: the refusal is the server's.",
     presentation: "PANEL",
     readRetryable: false,
   },
@@ -183,6 +197,7 @@ export interface ClassifiedError {
 }
 
 const BY_STATUS: Readonly<Record<number, ApiErrorCode>> = {
+  401: "AUTHENTICATION_REQUIRED",
   403: "PERMISSION_DENIED",
   404: "NO_DATA_FOR_PERIOD",
   409: "STATE_UNRELIABLE",
@@ -212,7 +227,13 @@ export function classifyError(
 ): ClassifiedError {
   const raw = body?.error?.code;
   let code: ApiErrorCode;
-  if (isKnownCode(raw)) {
+  if (httpStatus === 401) {
+    // The access gate answers 401 with `PERMISSION_DENIED`, because
+    // `12-API_SPEC.md` §4 defines no code for "not authenticated". The status is
+    // the more specific signal here, and the two conditions need different
+    // treatments: one is "sign in", the other is "ask for a permission".
+    code = "AUTHENTICATION_REQUIRED";
+  } else if (isKnownCode(raw)) {
     code = raw;
   } else if (httpStatus === null) {
     code = "NETWORK_UNAVAILABLE";

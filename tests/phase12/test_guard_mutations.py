@@ -66,9 +66,9 @@ class ContractGuardMutations(unittest.TestCase):
             edit(
                 root / TERMINAL / "screens.ts",
                 '"GET /portfolio/attribution"',
-                '"GET /journal/entries"',
+                '"GET /portfolio/sharpe-ratio"',
             )
-            self.assertCaught(contract_check(root), "GET /journal/entries")
+            self.assertCaught(contract_check(root), "GET /portfolio/sharpe-ratio")
 
     def test_a_dto_field_the_backend_does_not_send(self) -> None:
         """`order.status` when the backend sends `order.state`."""

@@ -180,15 +180,16 @@ class TestMigrationChain(unittest.TestCase):
                 "0009_phase9_risk",
                 "0010_phase10_oms_reconciliation",
                 "0011_phase11_portfolio_attribution",
+                "0012_phase12_identity_sessions",
             ],
             "the chain must run legacy -> Phase 1 -> 2 -> 3 -> 4 -> 5 -> 6 -> 7 -> 8 "
-            "-> 9 -> 10 -> 11, no branch",
+            "-> 9 -> 10 -> 11 -> 12, no branch",
         )
 
     def test_exactly_one_head(self) -> None:
         downs = {rev.down_revision for rev in self.chain}
         heads = [rev.revision for rev in self.chain if rev.revision not in downs]
-        self.assertEqual(heads, ["0011_phase11_portfolio_attribution"])
+        self.assertEqual(heads, ["0012_phase12_identity_sessions"])
 
     def test_upgrading_from_the_legacy_revision_reaches_phase_2(self) -> None:
         """A database stamped at `002` must have a path to head without manual edits."""
@@ -212,6 +213,7 @@ class TestMigrationChain(unittest.TestCase):
                 "0009_phase9_risk",
                 "0010_phase10_oms_reconciliation",
                 "0011_phase11_portfolio_attribution",
+                "0012_phase12_identity_sessions",
             ],
         )
 

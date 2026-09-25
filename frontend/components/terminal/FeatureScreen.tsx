@@ -42,6 +42,7 @@ import {
   Value,
 } from "@/components/terminal/primitives";
 import { QueryPanel } from "@/components/terminal/QueryPanel";
+import { TimeSeriesChart } from "@/components/terminal/TimeSeriesChart";
 import { ScreenFrame } from "@/components/terminal/ScreenFrame";
 import { useTerminalQuery } from "@/components/terminal/useTerminalQuery";
 
@@ -167,40 +168,54 @@ export function FeatureScreen({
                 isEmpty={(envelope) => envelope.data.length === 0}
               >
                 {(envelope) => (
-                  <DenseTable
-                    caption={`${selected} values with market time, knowledge time and availability`}
-                    columns={[
-                      {
-                        key: "market",
-                        header: "MARKET TIME",
-                        render: (row) => <Instant iso={row.marketTime} />,
-                      },
-                      {
-                        key: "knowledge",
-                        header: "KNOWLEDGE TIME",
-                        render: (row) => <Instant iso={row.knowledgeTime} />,
-                      },
-                      {
-                        key: "available",
-                        header: "AVAILABLE AT",
-                        render: (row) => <Instant iso={row.availableAt} />,
-                      },
-                      {
-                        key: "value",
-                        header: "VALUE",
-                        unit: identity?.units ?? undefined,
-                        align: "right",
-                        render: (row) => <Value presented={row.value} />,
-                      },
-                      {
-                        key: "quality",
-                        header: "QUALITY",
-                        render: (row) => row.qualityStatus ?? "—",
-                      },
-                    ]}
-                    rows={envelope.data.map(featureValueRow)}
-                    rowKey={(row, index) => `${row.marketTime ?? index}`}
-                  />
+                  <div className="space-y-4">
+                    {/* The chart 13-FRONTEND_IA.md §8 specifies. Market time on the
+                        axis, knowledge time in the caption and in every tooltip. */}
+                    <TimeSeriesChart
+                      label={`${selected} over market time`}
+                      unit={identity?.units ?? ""}
+                      knowledgeTime={envelope.meta.knowledgeTime}
+                      quality={quality}
+                      rows={envelope.data.map(featureValueRow).map((row) => ({
+                        marketTime: row.marketTime,
+                        value: row.value,
+                      }))}
+                    />
+                    <DenseTable
+                      caption={`${selected} values with market time, knowledge time and availability`}
+                      columns={[
+                        {
+                          key: "market",
+                          header: "MARKET TIME",
+                          render: (row) => <Instant iso={row.marketTime} />,
+                        },
+                        {
+                          key: "knowledge",
+                          header: "KNOWLEDGE TIME",
+                          render: (row) => <Instant iso={row.knowledgeTime} />,
+                        },
+                        {
+                          key: "available",
+                          header: "AVAILABLE AT",
+                          render: (row) => <Instant iso={row.availableAt} />,
+                        },
+                        {
+                          key: "value",
+                          header: "VALUE",
+                          unit: identity?.units ?? undefined,
+                          align: "right",
+                          render: (row) => <Value presented={row.value} />,
+                        },
+                        {
+                          key: "quality",
+                          header: "QUALITY",
+                          render: (row) => row.qualityStatus ?? "—",
+                        },
+                      ]}
+                      rows={envelope.data.map(featureValueRow)}
+                      rowKey={(row, index) => `${row.marketTime ?? index}`}
+                    />
+                  </div>
                 )}
               </QueryPanel>
             </DerivedPanel>

@@ -90,6 +90,19 @@ jobs:
       - name: Terminal imports resolve
         run: python tools/check_terminal_imports.py
 
+      # Phase 12 remediation. Every route carries an authorization policy or is one
+      # of the two container probes; the five permissions are 17-SECURITY.md §4's;
+      # no route requires LIVE_TRADE; CSRF covers every state-changing method.
+      - name: Authorization boundary
+        run: python tools/check_auth_boundary.py
+
+      # Resolves every `from oipulse....` name against the module it names. Added
+      # after an import of a function that did not exist reached this far: the
+      # module needed fastapi to import, so nothing local executed it, and
+      # compileall compiles without resolving names.
+      - name: Internal imports resolve
+        run: python tools/check_internal_imports.py
+
       - name: Foundation tests (stdlib only)
         run: python -m unittest discover -s tests -t . -v
 

@@ -84,6 +84,13 @@ class Settings:
     session_secret_key: str
     token_encryption_key: str
 
+    #: Origins accepted on a state-changing request (`17-SECURITY.md` §7.2). Empty
+    #: means no state-changing request can pass origin validation, which is the
+    #: correct default: an unconfigured deployment must not accept writes from
+    #: anywhere, and §7 requires an absent or unlisted origin to be rejected rather
+    #: than allowed through.
+    allowed_origins: frozenset[str] = frozenset()
+
     # Live trading requires all three gates (17-SECURITY.md §4). Both env-sourced gates
     # default to off; the third is a per-principal permission checked at request time.
     live_trading_enabled: bool = False
@@ -134,6 +141,17 @@ def _require_secret(env: Mapping[str, str], key: str, errors: list[str]) -> str:
     return value
 
 
+def _origins(raw: str) -> frozenset[str]:
+    """Parse a comma-separated origin allow-list.
+
+    Normalised to lower case without a trailing slash, matching the comparison in
+    `oipulse/identity/csrf.py`. A value with a path is kept as written and will
+    simply never match a real `Origin` header, which is a serialised origin -- so a
+    misconfiguration fails closed rather than matching more than intended.
+    """
+    return frozenset(part.strip().rstrip("/").lower() for part in raw.split(",") if part.strip())
+
+
 def _flag(env: Mapping[str, str], key: str) -> bool:
     return env.get(key, "").strip().lower() in _TRUE
 
@@ -169,6 +187,19 @@ def load_settings(
 
     session_secret_key = _require_secret(env, "SESSION_SECRET_KEY", errors)
     token_encryption_key = _require_secret(env, "TOKEN_ENCRYPTION_KEY", errors)
+
+    allowed_origins = _origins(env.get("ALLOWED_ORIGINS", ""))
+    if app_env == Environment.PRODUCTION and not allowed_origins:
+        errors.append(
+            "ALLOWED_ORIGINS is required in production: 17-SECURITY.md §7.2 rejects a "
+            "state-changing request whose Origin is not allow-listed, and an empty "
+            "list would reject every write rather than fail loudly here"
+        )
+    elif not allowed_origins:
+        warnings.append(
+            "ALLOWED_ORIGINS is unset; every state-changing request will be refused "
+            "by origin validation (17-SECURITY.md §7.2)"
+        )
 
     live_enabled = _flag(env, "LIVE_TRADING_ENABLED")
     live_confirmed = _flag(env, "LIVE_TRADING_CONFIRMED")
@@ -206,6 +237,7 @@ def load_settings(
         redis_url=redis_url,
         session_secret_key=session_secret_key,
         token_encryption_key=token_encryption_key,
+        allowed_origins=allowed_origins,
         live_trading_enabled=live_enabled,
         live_trading_confirmed=live_confirmed,
         warnings=tuple(warnings),

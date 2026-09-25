@@ -682,3 +682,27 @@ export interface PositionReconciliationRunDto {
   readonly needs_attention: boolean;
   readonly content_digest: string;
 }
+
+// ------------------------------------------------------------------- journal
+
+/**
+ * @contract model JournalEntry
+ *
+ * The accounting journal from Phase 8, not the reflective notebook
+ * `13-FRONTEND_IA.md` §6 also describes. `order_id` and `fill_key` are the linkage
+ * `12-API_SPEC.md` §3 requires: from an entry to the order, and from the order to
+ * the intent, the risk decision and the signal.
+ */
+export interface JournalEntryDto {
+  readonly entry_id: string;
+  readonly account_id: string;
+  readonly entry_type: string;
+  readonly occurred_at: string;
+  readonly cash_delta: string;
+  readonly realized_pnl_delta: string;
+  readonly fees_delta: string;
+  readonly cash_after: string;
+  readonly order_id: string | null;
+  readonly fill_key: string | null;
+  readonly source_event_key: string;
+}

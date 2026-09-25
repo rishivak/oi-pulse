@@ -28,6 +28,7 @@ from oipulse.analytics.engine import CyclicDependency, FeatureEngine, topologica
 from oipulse.analytics.registry import REGISTRY, Registry, Scope, feature
 from oipulse.analytics.values import MetricValue, Unavailable, UnavailableReason
 from oipulse.marketstate.staleness import QualityStatus
+from tests._http_auth import authenticate
 from tests.phase4._fixtures import at, ctx, state
 
 API_SOURCE = (REPO / "oipulse/api/features.py").read_text(encoding="utf-8")
@@ -388,6 +389,9 @@ class TestFeaturesFastAPIEndpoint(unittest.TestCase):
         )
         self.app = create_app(self.settings)
         self.client = TestClient(self.app)
+        # The Phase 12 gate protects every route; a client without a
+        # session now tests the 401, which is covered in tests/phase12/.
+        authenticate(self.app, self.client)
 
     def test_list_features_returns_all_registered(self):
         resp = self.client.get("/features")
