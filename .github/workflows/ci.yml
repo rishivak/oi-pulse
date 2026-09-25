@@ -67,6 +67,22 @@ jobs:
       - name: Alerts cannot mutate signal truth
         run: python tools/check_alert_purity.py
 
+      # Phase 12. The terminal is a presentation layer over the verified contracts.
+      # The first guard regenerates the API contract from oipulse/api/*.py and fails
+      # on drift or on any frontend path, screen declaration or DTO field the backend
+      # does not actually serve -- 18-ROADMAP.md Phase 12's "no screen ships ahead of
+      # its backend", checked rather than asserted.
+      - name: Generated API contract is current
+        run: python tools/export_api_contract.py --check
+
+      - name: Frontend calls correspond to backend contracts
+        run: python tools/check_frontend_contract.py
+
+      # No database, provider, broker, secret or stream reachable from the terminal,
+      # no live-execution path, no analytics recomputed client-side.
+      - name: Terminal boundary
+        run: python tools/check_terminal_boundary.py
+
       - name: Foundation tests (stdlib only)
         run: python -m unittest discover -s tests -t . -v
 
@@ -153,6 +169,33 @@ jobs:
             echo "::error::migration integration tests skipped; they must run in CI"
             exit 1
           fi
+
+  frontend:
+    name: Terminal (build, types, lint, tests)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+      # The terminal's pure modules run under `node --test` with Node's native
+      # TypeScript stripping and no test framework. This step needs no dependencies
+      # and is the one that covers the temporal, quality, residual and
+      # no-live-trading decisions.
+      - run: npm test
+      - run: npm run type-check
+      - run: npm run lint
+      # A production build is the only check that the route tree, the server/client
+      # component split and module resolution actually hold together.
+      - run: npm run build
+        env:
+          OIPULSE_V2_API_URL: http://localhost:8001
 
   tests:
     name: Full suite
