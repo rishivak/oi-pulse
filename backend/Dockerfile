@@ -12,5 +12,5 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-# Run migrations automatically before starting (safe because it's idempotent)
-CMD ["sh", "-c", "alembic upgrade head && python run_api.py"]
+# Start API server
+CMD ["python", "run_api.py"]

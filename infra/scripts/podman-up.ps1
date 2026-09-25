@@ -84,7 +84,7 @@ function Start-Api {
         -e DATABASE_URL=postgresql+asyncpg://oi_pulse:changeme@oi-pulse-postgres:5432/oi_pulse `
         -e REDIS_URL=redis://oi-pulse-redis:6379/0 `
         $backendImage `
-        sh -c "alembic upgrade head && python run_api.py" | Out-Host
+        python run_api.py | Out-Host
 }
 
 function Start-Worker {
