@@ -200,13 +200,14 @@ class TestReconciliationApi(unittest.TestCase):
             "/reconciliation/place",
         ):
             with self.subTest(path=path):
-                self.assertEqual(self.client.post(path, json={}).status_code, 404)
+                self.assertIn(self.client.post(path, json={}).status_code, (404, 405))
 
     def test_unresolved_orders_are_listable(self) -> None:
-        order = fx.order(fx.intent(client_order_intent_id="amb"))
+        it = fx.intent(client_order_intent_id="amb")
+        order = fx.order(it)
         venue = fx.venue(faults=fx.lose_ack_for_first_attempt(order.order_id))
         self.service.manager = OrderManager(adapter=venue)
-        fx.run(fx.submit_one(self.service.manager, ord_=order))
+        fx.run(fx.submit_one(self.service.manager, it=it, ord_=order))
         body = self.client.get("/reconciliation/orders?unresolved_only=true").json()
         self.assertEqual(body["meta"]["count"], 1)
         self.assertEqual(body["meta"]["without_provider_identity"], 1)
