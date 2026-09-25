@@ -16,6 +16,7 @@ from __future__ import annotations
 import ast
 import subprocess
 import sys
+import tempfile
 import unittest
 from decimal import Decimal
 from pathlib import Path
@@ -672,5 +673,176 @@ class TestObservability(unittest.TestCase):
         )
 
 
+class TestPortfolioIntegrityGuardMutation(unittest.TestCase):
+    """Mutation tests for tools/check_portfolio_integrity.py."""
+
+    def test_settable_residual_field_fails_guard(self) -> None:
+        from tools.check_portfolio_integrity import _check_residual_is_derived
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            target = tmp / "oipulse/trading/portfolio"
+            target.mkdir(parents=True)
+            original = (REPO / "oipulse/trading/portfolio/attribution.py").read_text(
+                encoding="utf-8"
+            )
+            # Add residual field to AttributionResult class
+            mutated = original.replace(
+                "class AttributionResult:\n",
+                "class AttributionResult:\n    residual: Decimal = Decimal(0)\n",
+            )
+            (target / "attribution.py").write_text(mutated, encoding="utf-8")
+            findings = _check_residual_is_derived(tmp)
+            self.assertTrue(
+                any("declares `residual` as a field" in f for f in findings),
+                f"Expected residual field violation, got {findings}",
+            )
+
+    def test_non_derived_residual_property_fails_guard(self) -> None:
+        from tools.check_portfolio_integrity import _check_residual_is_derived
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            target = tmp / "oipulse/trading/portfolio"
+            target.mkdir(parents=True)
+            original = (REPO / "oipulse/trading/portfolio/attribution.py").read_text(
+                encoding="utf-8"
+            )
+            # Replace residual property with constant 0
+            mutated = original.replace(
+                "return self.total_pnl - self.explained",
+                "return Decimal(0)",
+            )
+            (target / "attribution.py").write_text(mutated, encoding="utf-8")
+            findings = _check_residual_is_derived(tmp)
+            self.assertTrue(
+                any("does not derive from total_pnl and explained" in f for f in findings),
+                f"Expected non-derived residual violation, got {findings}",
+            )
+
+    def test_component_amount_assignment_fails_guard(self) -> None:
+        from tools.check_portfolio_integrity import _check_no_component_is_adjusted
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            target = tmp / "oipulse/trading/portfolio"
+            target.mkdir(parents=True)
+            original = (REPO / "oipulse/trading/portfolio/attribution.py").read_text(
+                encoding="utf-8"
+            )
+            mutated = original + "\ndef adjust(c):\n    c.amount = Decimal(0)\n"
+            (target / "attribution.py").write_text(mutated, encoding="utf-8")
+            findings = _check_no_component_is_adjusted(tmp)
+            self.assertTrue(
+                any("assigns to a component's `amount`" in f for f in findings),
+                f"Expected component amount assignment violation, got {findings}",
+            )
+
+    def test_runtime_metadata_in_hash_fails_guard(self) -> None:
+        from tools.check_portfolio_integrity import _check_hash_excludes_runtime_metadata
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            target = tmp / "oipulse/trading/portfolio"
+            target.mkdir(parents=True)
+            original = (REPO / "oipulse/trading/portfolio/snapshot.py").read_text(encoding="utf-8")
+            # Leak snapshot_id into as_dict()
+            mutated = original.replace(
+                '"account_id": self.account_id,',
+                '"account_id": self.account_id, "snapshot_id": self.snapshot_id,',
+            )
+            (target / "snapshot.py").write_text(mutated, encoding="utf-8")
+            findings = _check_hash_excludes_runtime_metadata(tmp)
+            self.assertTrue(
+                any("includes runtime metadata" in f for f in findings),
+                f"Expected runtime metadata in hash violation, got {findings}",
+            )
+
+    def test_second_price_source_in_valuation_fails_guard(self) -> None:
+        from tools.check_portfolio_integrity import _check_single_price_source
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            target = tmp / "oipulse/trading/portfolio"
+            target.mkdir(parents=True)
+            original = (REPO / "oipulse/trading/portfolio/valuation.py").read_text(encoding="utf-8")
+            mutated = original + "\ndef bad_fetch(provider):\n    return provider.fetch_quotes()\n"
+            (target / "valuation.py").write_text(mutated, encoding="utf-8")
+            findings = _check_single_price_source(tmp)
+            self.assertTrue(
+                any("calls fetch_quotes" in f for f in findings),
+                f"Expected price fetch violation, got {findings}",
+            )
+
+    def test_forbidden_module_import_fails_guard(self) -> None:
+        from tools.check_portfolio_integrity import _check_imports
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            target = tmp / "oipulse/trading/portfolio"
+            target.mkdir(parents=True)
+            (target / "bad_import.py").write_text(
+                "import oipulse.trading.oms\n",
+                encoding="utf-8",
+            )
+            findings = _check_imports(tmp)
+            self.assertTrue(
+                any("imports oipulse.trading.oms" in f for f in findings),
+                f"Expected forbidden import violation, got {findings}",
+            )
+
+    def test_network_module_import_fails_guard(self) -> None:
+        from tools.check_portfolio_integrity import _check_imports
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            target = tmp / "oipulse/trading/portfolio"
+            target.mkdir(parents=True)
+            (target / "bad_socket.py").write_text(
+                "import httpx\n",
+                encoding="utf-8",
+            )
+            findings = _check_imports(tmp)
+            self.assertTrue(
+                any("imports httpx" in f for f in findings),
+                f"Expected network import violation, got {findings}",
+            )
+
+    def test_upstream_mutation_fails_guard(self) -> None:
+        from tools.check_portfolio_integrity import _check_no_mutation_of_upstream_truth
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            target = tmp / "oipulse/trading/portfolio"
+            target.mkdir(parents=True)
+            (target / "bad_mutator.py").write_text(
+                "def mutate(order):\n    order.state = 'FILLED'\n",
+                encoding="utf-8",
+            )
+            findings = _check_no_mutation_of_upstream_truth(tmp)
+            self.assertTrue(
+                any("assigns to order.state" in f for f in findings),
+                f"Expected upstream mutation violation, got {findings}",
+            )
+
+    def test_clock_call_fails_guard(self) -> None:
+        from tools.check_portfolio_integrity import _check_no_clock
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            target = tmp / "oipulse/trading/portfolio"
+            target.mkdir(parents=True)
+            (target / "bad_clock.py").write_text(
+                "import datetime\ndef now():\n    return datetime.datetime.now()\n",
+                encoding="utf-8",
+            )
+            findings = _check_no_clock(tmp)
+            self.assertTrue(
+                any("calls now()" in f for f in findings),
+                f"Expected clock call violation, got {findings}",
+            )
+
+
 if __name__ == "__main__":
     unittest.main()
+
